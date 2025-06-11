@@ -3,20 +3,20 @@
 #================================================================================
 # Xray Ultimate Simplified Script (XUS)
 #
-# Version: 1.6.0 (Definitive Final Version)
+# Version: 1.7.0 (Definitive Final Version)
 # Author: AI Assistant & wuyou0789
 # GitHub: (Host this on your own GitHub repository)
 #
 # This script installs and manages one specific setup: VLESS-XTLS-uTLS-REALITY.
 # Designed to be invoked via a one-liner that handles download, execution, and cleanup.
-# New in 1.6.0: Split 'View Link' functionality into two distinct options for clarity.
+# New in 1.7.0: Remembers user's domain/IP preference and improves menu display flow.
 #================================================================================
 
 # --- Script Environment ---
 set -o pipefail
 PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 export PATH
-readonly SCRIPT_VERSION="1.6.0"
+readonly SCRIPT_VERSION="1.7.0"
 # These URLs are placeholders for the self-update feature.
 readonly SCRIPT_URL="https://raw.githubusercontent.com/YourUsername/YourRepo/main/install.sh"
 readonly VERSION_CHECK_URL="https://raw.githubusercontent.com/YourUsername/YourRepo/main/version.txt"
@@ -31,6 +31,7 @@ readonly NC='\033[0m'
 # --- Configuration Paths ---
 readonly SCRIPT_DIR="/usr/local/etc/xus-script"
 readonly SCRIPT_SELF_PATH="${SCRIPT_DIR}/menu.sh"
+readonly PREFS_FILE="${SCRIPT_DIR}/user_prefs.conf" # NEW: Preference file
 readonly XRAY_CONFIG_FILE="/usr/local/etc/xray/config.json"
 readonly XRAY_BIN_PATH="/usr/local/bin/xray"
 readonly ALIAS_FILE="/etc/profile.d/xus-alias.sh"
@@ -113,6 +114,7 @@ install_xray_core() {
 }
 
 generate_xray_config() {
+    # This function is now focused solely on generating the Xray config
     _info "--- 开始 Xray 配置向导 ---"
     read -p "请输入 Xray 监听端口 (1-65535, 默认 443): " xray_port
     [[ -z "$xray_port" ]] && xray_port=443
@@ -166,15 +168,11 @@ generate_xray_config() {
     _info "配置文件生成成功。"
 }
 
-# NEW: View existing config without prompts
-view_existing_config() {
-    [[ ! -f "$XRAY_CONFIG_FILE" ]] && _error "配置文件不存在！" && return
-    
-    clear
-    _info "--- 当前配置信息 (自动检测IP) ---"
-    
-    local server_address=$(curl -s4 ip.sb || curl -s4 icanhazip.com || echo "your_server_ip")
-    local remark_name="VLESS-XTLS-uTLS-REALITY" # Use default remark
+# UPDATE: Generic function to display a share link
+# Takes address and remark as arguments
+display_share_link() {
+    local server_address="$1"
+    local remark_name="$2"
 
     local config_data=$(jq -r '[
         .inbounds[0].port, .inbounds[0].settings.clients[0].id, .inbounds[0].streamSettings.realitySettings.privateKey,
@@ -185,6 +183,7 @@ view_existing_config() {
     local public_key=$($XRAY_BIN_PATH x25519 -i "${private_key}" | awk '/Public key/ {print $3}')
     local vless_link="vless://${uuid}@${server_address}:${xray_port}?security=reality&encryption=none&pbk=${public_key}&host=${sni}&fp=chrome&sid=${short_id}&type=tcp&flow=xtls-rprx-vision&sni=${sni}#${remark_name}"
 
+    clear
     _info "Xray 配置信息"
     echo -e "
   地址 (Address)   : ${YELLOW}${server_address}${NC}
@@ -204,8 +203,28 @@ ${BLUE}---------------- 二维码 ------------------${NC}"
     echo -e "${BLUE}-------------------------------------------${NC}"
 }
 
+# NEW: View existing config based on saved preferences
+view_existing_config() {
+    [[ ! -f "$XRAY_CONFIG_FILE" ]] && _error "配置文件不存在！" && return
+    
+    local server_address
+    # Read saved address from preference file
+    if [[ -f "$PREFS_FILE" ]]; then
+        source "$PREFS_FILE" # This will load SHARE_ADDRESS variable
+    fi
 
-# NEW: Interactively regenerate a share link with custom address/remark
+    # If SHARE_ADDRESS is not set, fallback to auto-detecting IP
+    if [[ -z "$SHARE_ADDRESS" ]]; then
+        _info "未找到偏好设置，正在自动检测IP地址..."
+        server_address=$(curl -s4 ip.sb || curl -s4 icanhazip.com || echo "your_server_ip")
+    else
+        server_address="$SHARE_ADDRESS"
+    fi
+
+    display_share_link "$server_address" "VLESS-XTLS-uTLS-REALITY"
+}
+
+# UPDATE: Interactively regenerate a share link and save the preference
 regenerate_share_link() {
     [[ ! -f "$XRAY_CONFIG_FILE" ]] && _error "配置文件不存在！" && return
     
@@ -224,37 +243,15 @@ regenerate_share_link() {
         _info "使用服务器IP地址: ${server_address}"
     fi
 
+    # NEW: Save the chosen address to the preference file
+    echo "SHARE_ADDRESS=\"$server_address\"" > "$PREFS_FILE"
+    _info "您的选择 '${server_address}' 已被保存为默认地址。"
+
     local remark_name
     read -p "请输入分享链接的备注名 (默认: VLESS-XTLS-uTLS-REALITY): " remark_name
     [[ -z "$remark_name" ]] && remark_name="VLESS-XTLS-uTLS-REALITY"
 
-    local config_data=$(jq -r '[
-        .inbounds[0].port, .inbounds[0].settings.clients[0].id, .inbounds[0].streamSettings.realitySettings.privateKey,
-        .inbounds[0].streamSettings.realitySettings.serverNames[0], .inbounds[0].streamSettings.realitySettings.shortIds[0]
-    ] | @tsv' "$XRAY_CONFIG_FILE")
-    read -r xray_port uuid private_key sni short_id <<< "$config_data"
-    
-    local public_key=$($XRAY_BIN_PATH x25519 -i "${private_key}" | awk '/Public key/ {print $3}')
-    local vless_link="vless://${uuid}@${server_address}:${xray_port}?security=reality&encryption=none&pbk=${public_key}&host=${sni}&fp=chrome&sid=${short_id}&type=tcp&flow=xtls-rprx-vision&sni=${sni}#${remark_name}"
-
-    clear
-    _info "Xray 配置信息"
-    echo -e "
-  地址 (Address)   : ${YELLOW}${server_address}${NC}
-  端口 (Port)      : ${YELLOW}${xray_port}${NC}
-  用户 ID (UUID)   : ${YELLOW}${uuid}${NC}
-  公钥 (PublicKey) : ${YELLOW}${public_key}${NC}
-  短ID (ShortId)   : ${YELLOW}${short_id}${NC}
-  目标域名 (SNI)   : ${YELLOW}${sni}${NC}
-
-${BLUE}---------------- 分享链接 (备注: ${remark_name}) ----------------${NC}
-${vless_link}
-${BLUE}---------------- 二维码 ------------------${NC}"
-
-    _exists "qrencode" && qrencode -t ANSIUTF8 -m 1 "${vless_link}" || \
-    _warn "未找到 qrencode, 无法生成二维码。请运行 'apt install qrencode' 或 'yum install qrencode'。"
-    
-    echo -e "${BLUE}-------------------------------------------${NC}"
+    display_share_link "$server_address" "$remark_name"
 }
 
 do_install() {
@@ -275,7 +272,7 @@ do_install() {
     systemctl enable xray &>/dev/null
     _systemctl "restart"
     
-    regenerate_share_link # At first install, always ask user for details
+    regenerate_share_link
 
     _info "安装完成！"
     _warn "为了确保 'xs' 命令在下次登录时可用，请重新连接您的 SSH 会话。"
@@ -287,7 +284,8 @@ do_uninstall() {
     if [[ "$choice" =~ ^[Yy]$ ]]; then
         _systemctl "stop"
         bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove --purge
-        rm -rf "$SCRIPT_DIR" "$XRAY_CONFIG_FILE" "$ALIAS_FILE" "/etc/sysctl.d/99-xus.conf"
+        # Now also removes the preference file
+        rm -rf "$SCRIPT_DIR" "$XRAY_CONFIG_FILE" "$ALIAS_FILE" "/etc/sysctl.d/99-xus.conf" "$PREFS_FILE"
         _info "Xray 已成功卸载。"
         _warn "请执行 'source /etc/profile' 或重新登录以移除旧的命令别名。"
     else
@@ -295,6 +293,7 @@ do_uninstall() {
     fi
 }
 
+# CRITICAL FIX: The main_menu function is now complete and updated.
 main_menu() {
     clear
     local xray_status
@@ -314,7 +313,7 @@ ${GREEN}3.${NC}  更新 Xray 内核至最新版
 ${GREEN}4.${NC}  启动 Xray      ${GREEN}5.${NC}  停止 Xray      ${GREEN}6.${NC}  重启 Xray
 ${BLUE}----------------- 配置管理 ------------------${NC}
 ${GREEN}101.${NC} 查看当前分享链接
-${GREEN}102.${NC} 重新生成分享链接
+${GREEN}102.${NC} 重新生成/自定义链接
 ${GREEN}103.${NC} 查看实时日志
 ${GREEN}104.${NC} 修改用户 ID (UUID)
 ${GREEN}105.${NC} 修改回落目标域名
@@ -348,7 +347,8 @@ ${GREEN}0.${NC}  退出脚本
     *) _warn "无效的选项。" ;;
     esac
     
-    if [[ "$option" != "101" && "$option" != "102" && "$option" != "103" && "$option" != "104" && "$option" != "105" ]]; then
+    # CRITICAL FIX: The pause logic is now active for all relevant options
+    if [[ "$option" != "103" && "$option" != "0" ]]; then
         echo && read -n 1 -s -r -p "按任意键返回主菜单..."
     fi
 }
