@@ -3,21 +3,20 @@
 #================================================================================
 # Xray Ultimate Simplified Script (XUS)
 #
-# Version: 1.5.0 (Definitive Final Version)
+# Version: 1.6.0 (Definitive Final Version)
 # Author: AI Assistant & wuyou0789
 # GitHub: (Host this on your own GitHub repository)
 #
 # This script installs and manages one specific setup: VLESS-XTLS-uTLS-REALITY.
 # Designed to be invoked via a one-liner that handles download, execution, and cleanup.
-# New in 1.5.0: CRITICAL FIXES for empty main_menu and silent exit bug.
+# New in 1.6.0: Split 'View Link' functionality into two distinct options for clarity.
 #================================================================================
 
 # --- Script Environment ---
-# CRITICAL FIX: Removed 'set -e' to prevent silent exits on non-critical errors.
 set -o pipefail
 PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 export PATH
-readonly SCRIPT_VERSION="1.5.0"
+readonly SCRIPT_VERSION="1.6.0"
 # These URLs are placeholders for the self-update feature.
 readonly SCRIPT_URL="https://raw.githubusercontent.com/YourUsername/YourRepo/main/install.sh"
 readonly VERSION_CHECK_URL="https://raw.githubusercontent.com/YourUsername/YourRepo/main/version.txt"
@@ -118,11 +117,11 @@ generate_xray_config() {
     read -p "请输入 Xray 监听端口 (1-65535, 默认 443): " xray_port
     [[ -z "$xray_port" ]] && xray_port=443
     local fallback_target=$(validate_dest_domain)
-    read -p "请输入自定义 UUID (留空将自动生成): " client_uuid
     # First, ensure xray binary is executable and available
     if ! _exists "$XRAY_BIN_PATH"; then
       install_xray_core
     fi
+    read -p "请输入自定义 UUID (留空将自动生成): " client_uuid
     [[ -z "$client_uuid" ]] && client_uuid=$($XRAY_BIN_PATH uuid)
 
     local keys=$($XRAY_BIN_PATH x25519)
@@ -167,15 +166,54 @@ generate_xray_config() {
     _info "配置文件生成成功。"
 }
 
-display_and_generate_config() {
+# NEW: View existing config without prompts
+view_existing_config() {
     [[ ! -f "$XRAY_CONFIG_FILE" ]] && _error "配置文件不存在！" && return
     
     clear
-    _info "--- 最后一步：生成分享链接 ---"
+    _info "--- 当前配置信息 (自动检测IP) ---"
+    
+    local server_address=$(curl -s4 ip.sb || curl -s4 icanhazip.com || echo "your_server_ip")
+    local remark_name="VLESS-XTLS-uTLS-REALITY" # Use default remark
+
+    local config_data=$(jq -r '[
+        .inbounds[0].port, .inbounds[0].settings.clients[0].id, .inbounds[0].streamSettings.realitySettings.privateKey,
+        .inbounds[0].streamSettings.realitySettings.serverNames[0], .inbounds[0].streamSettings.realitySettings.shortIds[0]
+    ] | @tsv' "$XRAY_CONFIG_FILE")
+    read -r xray_port uuid private_key sni short_id <<< "$config_data"
+    
+    local public_key=$($XRAY_BIN_PATH x25519 -i "${private_key}" | awk '/Public key/ {print $3}')
+    local vless_link="vless://${uuid}@${server_address}:${xray_port}?security=reality&encryption=none&pbk=${public_key}&host=${sni}&fp=chrome&sid=${short_id}&type=tcp&flow=xtls-rprx-vision&sni=${sni}#${remark_name}"
+
+    _info "Xray 配置信息"
+    echo -e "
+  地址 (Address)   : ${YELLOW}${server_address}${NC}
+  端口 (Port)      : ${YELLOW}${xray_port}${NC}
+  用户 ID (UUID)   : ${YELLOW}${uuid}${NC}
+  公钥 (PublicKey) : ${YELLOW}${public_key}${NC}
+  短ID (ShortId)   : ${YELLOW}${short_id}${NC}
+  目标域名 (SNI)   : ${YELLOW}${sni}${NC}
+
+${BLUE}---------------- 分享链接 (备注: ${remark_name}) ----------------${NC}
+${vless_link}
+${BLUE}---------------- 二维码 ------------------${NC}"
+
+    _exists "qrencode" && qrencode -t ANSIUTF8 -m 1 "${vless_link}" || \
+    _warn "未找到 qrencode, 无法生成二维码。请运行 'apt install qrencode' 或 'yum install qrencode'。"
+    
+    echo -e "${BLUE}-------------------------------------------${NC}"
+}
+
+
+# NEW: Interactively regenerate a share link with custom address/remark
+regenerate_share_link() {
+    [[ ! -f "$XRAY_CONFIG_FILE" ]] && _error "配置文件不存在！" && return
+    
+    clear
+    _info "--- 重新生成分享链接 (交互式) ---"
     
     local server_address
-    local auto_ip
-    auto_ip=$(curl -s4 ip.sb || curl -s4 icanhazip.com || echo "your_server_ip")
+    local auto_ip=$(curl -s4 ip.sb || curl -s4 icanhazip.com || echo "your_server_ip")
     
     read -p "是否为分享链接指定一个域名作为连接地址? (默认使用IP: ${auto_ip}) [y/N]: " use_domain
     if [[ "$use_domain" =~ ^[Yy]$ ]]; then
@@ -237,7 +275,7 @@ do_install() {
     systemctl enable xray &>/dev/null
     _systemctl "restart"
     
-    display_and_generate_config
+    regenerate_share_link # At first install, always ask user for details
 
     _info "安装完成！"
     _warn "为了确保 'xs' 命令在下次登录时可用，请重新连接您的 SSH 会话。"
@@ -257,14 +295,13 @@ do_uninstall() {
     fi
 }
 
-# CRITICAL FIX: The main_menu function is now complete.
 main_menu() {
     clear
     local xray_status
     systemctl is-active --quiet xray && xray_status="${GREEN}运行中${NC}" || xray_status="${RED}已停止${NC}"
 
     echo -e "
-${BLUE}Xray Ultimate Simplified Script (xs) | v${SCRIPT_VERSION}${NC}
+${BLUE}Xray Ultimate Simplified Script | v${SCRIPT_VERSION}${NC}
 ${BLUE}===================================================${NC}
  Xray 状态: ${xray_status}
  Xray 版本: $(_exists xray && xray --version | head -n1 | awk '{print $2}' || echo "${RED}未安装${NC}")
@@ -276,10 +313,11 @@ ${GREEN}3.${NC}  更新 Xray 内核至最新版
 
 ${GREEN}4.${NC}  启动 Xray      ${GREEN}5.${NC}  停止 Xray      ${GREEN}6.${NC}  重启 Xray
 ${BLUE}----------------- 配置管理 ------------------${NC}
-${GREEN}101.${NC} 查看并重新生成分享链接
-${GREEN}102.${NC} 查看实时日志
-${GREEN}103.${NC} 修改用户 ID (UUID)
-${GREEN}104.${NC} 修改回落目标域名
+${GREEN}101.${NC} 查看当前分享链接
+${GREEN}102.${NC} 重新生成分享链接
+${GREEN}103.${NC} 查看实时日志
+${GREEN}104.${NC} 修改用户 ID (UUID)
+${GREEN}105.${NC} 修改回落目标域名
 ${BLUE}---------------------------------------------------${NC}
 ${GREEN}0.${NC}  退出脚本
 "
@@ -293,23 +331,24 @@ ${GREEN}0.${NC}  退出脚本
     4) _systemctl "start" ;;
     5) _systemctl "stop" ;;
     6) _systemctl "restart" ;;
-    101) display_and_generate_config ;;
-    102) journalctl -u xray -f --no-pager ;;
-    103)
+    101) view_existing_config ;;
+    102) regenerate_share_link ;;
+    103) journalctl -u xray -f --no-pager ;;
+    104)
         read -p "请输入新 UUID (留空自动生成): " new_uuid
         [[ -z "$new_uuid" ]] && new_uuid=$($XRAY_BIN_PATH uuid)
         jq ".inbounds[0].settings.clients[0].id = \"$new_uuid\"" "$XRAY_CONFIG_FILE" >tmp.json && mv tmp.json "$XRAY_CONFIG_FILE"
-        _systemctl "restart" && display_and_generate_config
+        _systemctl "restart" && regenerate_share_link
         ;;
-    104)
+    105)
         local new_dest=$(validate_dest_domain)
         jq ".inbounds[0].streamSettings.realitySettings.target = \"${new_dest}:443\" | .inbounds[0].streamSettings.realitySettings.serverNames = [\"$new_dest\"]" "$XRAY_CONFIG_FILE" >tmp.json && mv tmp.json "$XRAY_CONFIG_FILE"
-        _systemctl "restart" && display_and_generate_config
+        _systemctl "restart" && regenerate_share_link
         ;;
     *) _warn "无效的选项。" ;;
     esac
     
-    if [[ "$option" != "101" && "$option" != "102" && "$option" != "103" && "$option" != "104" ]]; then
+    if [[ "$option" != "101" && "$option" != "102" && "$option" != "103" && "$option" != "104" && "$option" != "105" ]]; then
         echo && read -n 1 -s -r -p "按任意键返回主菜单..."
     fi
 }
