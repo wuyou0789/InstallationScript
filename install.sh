@@ -3,20 +3,21 @@
 #================================================================================
 # Xray Ultimate Simplified Script (XUS)
 #
-# Version: 1.4.0 (Definitive Final Version)
+# Version: 1.5.0 (Definitive Final Version)
 # Author: AI Assistant & wuyou0789
 # GitHub: (Host this on your own GitHub repository)
 #
 # This script installs and manages one specific setup: VLESS-XTLS-uTLS-REALITY.
 # Designed to be invoked via a one-liner that handles download, execution, and cleanup.
+# New in 1.5.0: CRITICAL FIXES for empty main_menu and silent exit bug.
 #================================================================================
 
 # --- Script Environment ---
-set -e
+# CRITICAL FIX: Removed 'set -e' to prevent silent exits on non-critical errors.
 set -o pipefail
 PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 export PATH
-readonly SCRIPT_VERSION="1.4.0"
+readonly SCRIPT_VERSION="1.5.0"
 # These URLs are placeholders for the self-update feature.
 readonly SCRIPT_URL="https://raw.githubusercontent.com/YourUsername/YourRepo/main/install.sh"
 readonly VERSION_CHECK_URL="https://raw.githubusercontent.com/YourUsername/YourRepo/main/version.txt"
@@ -118,6 +119,10 @@ generate_xray_config() {
     [[ -z "$xray_port" ]] && xray_port=443
     local fallback_target=$(validate_dest_domain)
     read -p "请输入自定义 UUID (留空将自动生成): " client_uuid
+    # First, ensure xray binary is executable and available
+    if ! _exists "$XRAY_BIN_PATH"; then
+      install_xray_core
+    fi
     [[ -z "$client_uuid" ]] && client_uuid=$($XRAY_BIN_PATH uuid)
 
     local keys=$($XRAY_BIN_PATH x25519)
@@ -252,12 +257,65 @@ do_uninstall() {
     fi
 }
 
+# CRITICAL FIX: The main_menu function is now complete.
 main_menu() {
     clear
-    # ... (Menu display logic remains the same)
+    local xray_status
+    systemctl is-active --quiet xray && xray_status="${GREEN}运行中${NC}" || xray_status="${RED}已停止${NC}"
+
+    echo -e "
+${BLUE}Xray Ultimate Simplified Script (xs) | v${SCRIPT_VERSION}${NC}
+${BLUE}===================================================${NC}
+ Xray 状态: ${xray_status}
+ Xray 版本: $(_exists xray && xray --version | head -n1 | awk '{print $2}' || echo "${RED}未安装${NC}")
+ 配置文件:  $([[ -f "$XRAY_CONFIG_FILE" ]] && echo "${GREEN}存在${NC}" || echo "${RED}不存在${NC}")
+${BLUE}---------------------------------------------------${NC}
+${GREEN}1.${NC}  完整安装 (覆盖当前配置)
+${GREEN}2.${NC}  ${RED}卸载 Xray 和本脚本${NC}
+${GREEN}3.${NC}  更新 Xray 内核至最新版
+
+${GREEN}4.${NC}  启动 Xray      ${GREEN}5.${NC}  停止 Xray      ${GREEN}6.${NC}  重启 Xray
+${BLUE}----------------- 配置管理 ------------------${NC}
+${GREEN}101.${NC} 查看并重新生成分享链接
+${GREEN}102.${NC} 查看实时日志
+${GREEN}103.${NC} 修改用户 ID (UUID)
+${GREEN}104.${NC} 修改回落目标域名
+${BLUE}---------------------------------------------------${NC}
+${GREEN}0.${NC}  退出脚本
+"
+    read -rp "请输入选项: " option
+
+    case "$option" in
+    0) exit 0 ;;
+    1) do_install ;;
+    2) do_uninstall ;;
+    3) install_xray_core && _systemctl "restart" ;;
+    4) _systemctl "start" ;;
+    5) _systemctl "stop" ;;
+    6) _systemctl "restart" ;;
+    101) display_and_generate_config ;;
+    102) journalctl -u xray -f --no-pager ;;
+    103)
+        read -p "请输入新 UUID (留空自动生成): " new_uuid
+        [[ -z "$new_uuid" ]] && new_uuid=$($XRAY_BIN_PATH uuid)
+        jq ".inbounds[0].settings.clients[0].id = \"$new_uuid\"" "$XRAY_CONFIG_FILE" >tmp.json && mv tmp.json "$XRAY_CONFIG_FILE"
+        _systemctl "restart" && display_and_generate_config
+        ;;
+    104)
+        local new_dest=$(validate_dest_domain)
+        jq ".inbounds[0].streamSettings.realitySettings.target = \"${new_dest}:443\" | .inbounds[0].streamSettings.realitySettings.serverNames = [\"$new_dest\"]" "$XRAY_CONFIG_FILE" >tmp.json && mv tmp.json "$XRAY_CONFIG_FILE"
+        _systemctl "restart" && display_and_generate_config
+        ;;
+    *) _warn "无效的选项。" ;;
+    esac
+    
+    if [[ "$option" != "101" && "$option" != "102" && "$option" != "103" && "$option" != "104" ]]; then
+        echo && read -n 1 -s -r -p "按任意键返回主菜单..."
+    fi
 }
 
-# Script entry point, etc. The rest is the same as v1.4.0
+
+# --- Script Entry Point ---
 if [[ "$1" == "install" ]]; then
     do_install
 else
@@ -268,9 +326,5 @@ else
       [[ "$choice" =~ ^[Yy]$ ]] && do_install
       exit 0
     fi
-    # Re-enable the menu loop
-    while true
-    do
-        main_menu
-    done
+    while true; do main_menu; done
 fi
