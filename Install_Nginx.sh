@@ -72,28 +72,51 @@ install_dependencies() {
     ! _exists "nginx" && pkgs_to_install+="nginx "
     ! _exists "htpasswd" && pkgs_to_install+="apache2-utils "
     
+    # 安装非 Certbot 的依赖
     if [[ -n "$pkgs_to_install" ]]; then
         _install_pkgs $pkgs_to_install
     fi
 
+    # --- Certbot 安装逻辑 (修复版) ---
     _info "正在检查并安装 Certbot..."
-    if ! _exists "certbot"; then
-        _info "未找到 Certbot。将使用 Snap 进行安装 (现代 Ubuntu/Debian 推荐方式)..."
-        if ! _exists "snap"; then _install_pkgs "snapd"; fi
-        sudo snap install core; sudo snap refresh core
-        sudo apt-get remove -y certbot # 移除任何冲突的 apt 版本
+    
+    # 判断条件：如果 certbot 命令不存在，或者它不是一个指向 snap 目录的符号链接
+    # 这覆盖了“未安装”和“安装了错误的 APT 版本”两种情况
+    if ! _exists "certbot" || ! [[ $(readlink -f $(which certbot) 2>/dev/null) == *"/snap/"* ]]; then
+        if ! _exists "certbot"; then
+            _info "未找到 Certbot。将使用 Snap 进行安装 (推荐方式)..."
+        else
+            _warn "检测到不推荐的 Certbot 版本 (可能通过 APT 安装)。"
+            _info "正在自动移除旧版本并使用 Snap 重新安装以确保功能完整..."
+        fi
+        
+        # 1. 确保 snapd 已安装并运行
+        if ! _exists "snap"; then
+            _install_pkgs "snapd"
+        fi
+        
+        # 2. 确保 snap core 已更新 (这步很快，且能解决一些 snap 的奇怪问题)
+        sudo snap install core &>/dev/null; sudo snap refresh core &>/dev/null
+        
+        # 3. 移除任何通过 apt 安装的旧 Certbot 包 (非常重要，防止冲突)
+        _info "正在清理任何可能冲突的旧 Certbot (APT) 包..."
+        sudo apt-get remove -y certbot* python3-certbot-* &>/dev/null
+        sudo apt-get autoremove -y &>/dev/null
+
+        # 4. 使用 snap 安装 Certbot
+        _info "正在通过 Snap 安装 Certbot..."
         sudo snap install --classic certbot || _error "通过 snap 安装 Certbot 失败。"
+        
+        # 5. 创建符号链接，让 certbot 命令可以直接使用
         sudo ln -sf /snap/bin/certbot /usr/bin/certbot || _warn "创建 certbot 符号链接失败。"
         _info "Certbot 已通过 Snap 成功安装。"
     else
-        _info "检测到已安装的 Certbot。"
-        if [ -f /usr/bin/certbot ] && ! [ -L /usr/bin/certbot ] && ! [[ $(readlink -f /usr/bin/certbot) == *"/snap/"* ]]; then
-             _warn "检测到通过 APT 安装的旧版 Certbot。建议切换到 Snap 版本以获得最佳兼容性。"
-        fi
+        _info "检测到已正确安装的 Certbot (Snap 版本)。"
     fi
     
+    # 最后，再次验证插件是否真的可用
     if ! sudo certbot plugins | grep -q 'nginx'; then
-        _error "Certbot Nginx 插件不可用！请检查 Certbot 安装。"
+        _error "Certbot Nginx 插件仍然不可用！请检查 Certbot 和 Snap 安装。"
     fi
     _info "Certbot 及 Nginx 插件已准备就绪。"
 }
