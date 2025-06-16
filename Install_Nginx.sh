@@ -248,22 +248,51 @@ EOF_VHOST
     cat <<EOF_VHOST_SSL | sudo tee "${nginx_vhost_path}" > /dev/null
 # This server block handles all HTTP (port 80) requests and redirects them to HTTPS.
 server {
-    listen 80;
-    listen [::]:80;
-    server_name ${DOMAIN_NAME};
-    return 301 https://\$server_name\$request_uri;
-}
-
-# This server block handles all HTTPS (port 443) WebDAV logic.
-server {
     server_name ${DOMAIN_NAME};
     root ${WEBDEV_DIR};
+
     access_log /var/log/nginx/${DOMAIN_NAME}.access.log;
     error_log /var/log/nginx/${DOMAIN_NAME}.error.log;
 
-    client_max_body_size 0;
-    charset utf-8;
+    # --- **性能优化** ---
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    
+    # 缓存常用文件的元数据
+    open_file_cache max=1000 inactive=20s;
+    open_file_cache_valid 30s;
+    open_file_cache_min_uses 2;
+    open_file_cache_errors on;
+    # --- **结束性能优化** ---
 
+    client_max_body_size 0; # 允许大文件上传
+    charset utf-8;          # 解决中文文件名乱码
+
+    # --- **音频文件缓存策略** ---
+    location ~* \.(mp3|m4a|aac|ogg)$ {
+        # 设置非常长的浏览器缓存时间
+        expires 365d;
+        add_header Cache-Control "public, immutable";
+
+        # 允许跨域访问，某些播放器可能需要
+        add_header 'Access-Control-Allow-Origin' '*' always;
+        add_header 'Access-Control-Allow-Methods' 'GET, HEAD, OPTIONS' always;
+        add_header 'Access-Control-Allow-Headers' 'Range,DNT,X-CustomHeader,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type' always;
+        
+        # 允许 Range 请求，这是实现拖动播放进度条的关键
+        # Nginx 默认支持，这里确保一下
+        proxy_force_ranges on; # 如果在代理后面，或者确保支持
+        slice               1m; # 如果是大文件，可以开启切片
+        proxy_set_header    Range \$slice_range;
+        proxy_cache         off; # 对于音频流，通常不建议在 Nginx 层面缓存
+        
+        # 仍然需要认证才能访问
+        auth_basic "Secure WebDAV Access";
+        auth_basic_user_file ${NGINX_PASSWD_FILE};
+    }
+
+    # --- **主 WebDAV 配置** ---
     location / {
         auth_basic "Secure WebDAV Access";
         auth_basic_user_file ${NGINX_PASSWD_FILE};
@@ -279,13 +308,24 @@ server {
         autoindex on;
     }
 
-    # SSL settings are managed by Certbot
+    # --- SSL 配置 (由 Certbot 管理) ---
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
     ssl_certificate /etc/letsencrypt/live/${DOMAIN_NAME}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${DOMAIN_NAME}/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+}
+
+# --- HTTP 到 HTTPS 重定向块 (保持不变) ---
+server {
+    if (\$host = ${DOMAIN_NAME}) {
+        return 301 https://\$host\$request_uri;
+    }
+
+    listen 80;
+    server_name ${DOMAIN_NAME};
+    return 404; # managed by Certbot
 }
 EOF_VHOST_SSL
 
