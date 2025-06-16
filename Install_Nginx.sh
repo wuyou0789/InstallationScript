@@ -223,7 +223,7 @@ server {
         # --- End Permission Check ---
 
         dav_methods PUT DELETE MKCOL COPY MOVE;
-        dav_access user:rwx group:rwx all:r;
+        dav_access user:rw group:rw all:r;
         create_full_put_path on;
         autoindex on;
     }
