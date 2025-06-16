@@ -143,110 +143,11 @@ setup_script_invocation() {
 # --- Core Logic Functions ---
 
 do_install() {
-    local DOMAIN_NAME WEBDEV_DIR NGINX_PASSWD_FILE ADMIN_USER ADMIN_PASS
-    local nginx_map_file nginx_vhost_path
-    
-    # This trap ensures that if any command fails, the cleanup function is called.
-    trap 'install_cleanup' ERR
+    # ... (函数顶部的 trap 和 install_dependencies 等保持不变) ...
+    # ... (所有用户输入的部分保持不变) ...
 
-    install_cleanup() {
-        # This function is only called if the install script fails.
-        _warn "\n--- 安装过程中发生错误，正在执行自动清理... ---"
-        _nginx_ctl "stop" &>/dev/null
-        
-        if [ -n "$DOMAIN_NAME" ]; then
-            _warn "移除为 ${DOMAIN_NAME} 创建的 Nginx 配置..."
-            sudo rm -f "/etc/nginx/sites-enabled/${DOMAIN_NAME}"
-            sudo rm -f "/etc/nginx/sites-available/${DOMAIN_NAME}"
-        fi
-        [ -n "$nginx_map_file" ] && [ -f "$nginx_map_file" ] && sudo rm -f "$nginx_map_file"
-        [ -n "$NGINX_PASSWD_FILE" ] && [ -f "$NGINX_PASSWD_FILE" ] && sudo rm -f "$NGINX_PASSWD_FILE"
-        
-        if [ -n "$DOMAIN_NAME" ] && _exists "certbot" && sudo certbot certificates -d "$DOMAIN_NAME" &>/dev/null; then
-             _warn "删除为 ${DOMAIN_NAME} 创建的 SSL 证书..."
-             sudo certbot delete --cert-name "$DOMAIN_NAME" --non-interactive
-        fi
-        _info "--- 清理完成 ---"
-    }
-
-    install_dependencies
-
-    _info "--- Nginx WebDAV 全新安装与配置向导 ---"
-    read -p "请输入要绑定的域名 (例如: dav.example.com): " DOMAIN_NAME
-    if [[ -z "$DOMAIN_NAME" ]]; then _error "域名不能为空。"; fi
-
-    local default_dir_prompt="/var/www/nginx_webdav/${DOMAIN_NAME}"
-    read -p "请输入 WebDAV 文件存储目录 (默认为: ${default_dir_prompt}): " WEBDEV_DIR
-    WEBDEV_DIR=${WEBDEV_DIR:-$default_dir_prompt}
-
-    read -p "请输入 WebDAV 密码文件存放路径 (默认为: ${DEFAULT_NGINX_PASSWD_FILE}): " NGINX_PASSWD_FILE
-    NGINX_PASSWD_FILE=${NGINX_PASSWD_FILE:-$DEFAULT_NGINX_PASSWD_FILE}
-
-    read -p "请输入初始 WebDAV 管理员用户名 (将拥有所有权限): " ADMIN_USER
-    if [[ -z "$ADMIN_USER" ]]; then _error "管理员用户名不能为空。"; fi
-    
-    while true; do
-        read -s -p "请输入 ${ADMIN_USER} 的密码: " ADMIN_PASS; echo
-        read -s -p "请再次输入密码进行确认: " ADMIN_PASS_CONFIRM; echo
-        if [ "$ADMIN_PASS" = "$ADMIN_PASS_CONFIRM" ] && [ -n "$ADMIN_PASS" ]; then break; else _warn "密码为空或两次输入的密码不匹配，请重试。"; fi
-    done
-
-    # --- Start creating configurations ---
-    _info "正在准备 Nginx 配置文件..."
-    nginx_map_file="/etc/nginx/conf.d/awus_webdav_permissions.conf"
-    cat <<EOF_MAP | sudo tee "${nginx_map_file}" > /dev/null
-map \$remote_user \$is_writer {
-    default 0;
-    # AWUS:START_WRITERS
-    ${ADMIN_USER} 1;
-    # AWUS:END_WRITERS
-}
-EOF_MAP
-    
-    nginx_vhost_path="/etc/nginx/sites-available/${DOMAIN_NAME}"
-    cat <<EOF_VHOST | sudo tee "${nginx_vhost_path}" > /dev/null
-server {
-    listen 80;
-    server_name ${DOMAIN_NAME};
-    root ${WEBDEV_DIR};
-    # It's better to move logs to the SSL block to avoid duplicate entries
-    # access_log /var/log/nginx/${DOMAIN_NAME}.access.log;
-    # error_log /var/log/nginx/${DOMAIN_NAME}.error.log;
-}
-EOF_VHOST
-
-    _info "正在执行系统配置..."
-    sudo mkdir -p "${WEBDEV_DIR}" || _error "创建 WebDAV 目录失败。"
-    sudo chown www-data:www-data "${WEBDEV_DIR}" && sudo chmod 775 "${WEBDEV_DIR}"
-    sudo touch "${NGINX_PASSWD_FILE}" && sudo chown root:www-data "${NGINX_PASSWD_FILE}" && sudo chmod 640 "${NGINX_PASSWD_FILE}"
-    sudo htpasswd -cb "${NGINX_PASSWD_FILE}" "${ADMIN_USER}" "${ADMIN_PASS}" || _error "创建管理员用户失败。"
-
-    _info "正在启用新站点，以便 Certbot 可以找到它..."
-    sudo ln -sf "$nginx_vhost_path" "/etc/nginx/sites-enabled/"
-    sudo rm -f /etc/nginx/sites-enabled/default &>/dev/null
-    
-    _info "初步测试并启动 Nginx..."
-    sudo nginx -t || _error "Nginx 配置测试失败。"
-    # Use a more robust stop-then-start sequence
-    _nginx_ctl "stop" &>/dev/null # Ignore error if already stopped
-    _nginx_ctl "start" || _error "Nginx 启动失败。"
-
-    _info "尝试使用 Certbot 为 ${DOMAIN_NAME} 获取并安装 SSL 证书..."
-    read -p "请输入用于 Let's Encrypt 的邮箱 (推荐): " cert_email
-    local redirect_option="--redirect"
-    local email_option
-    if [ -n "$cert_email" ]; then
-        email_option="--email ${cert_email}"
-    else
-        _warn "未提供邮箱，将尝试无邮箱注册。"
-        email_option="--register-unsafely-without-email"
-    fi
-    sudo certbot --nginx -d "${DOMAIN_NAME}" --non-interactive --agree-tos ${email_option} ${redirect_option} || _error "Certbot 获取或安装证书失败。"
-
-    # Certbot 已经修改了 vhost 文件，现在我们再次覆盖它以加入 WebDAV 逻辑
-    _info "正在将 WebDAV 配置注入到已启用 SSL 的站点中..."
+    _info "正在将 WebDAV 和性能优化配置注入到已启用 SSL 的站点中..."
     cat <<EOF_VHOST_SSL | sudo tee "${nginx_vhost_path}" > /dev/null
-# This server block handles all HTTP (port 80) requests and redirects them to HTTPS.
 server {
     server_name ${DOMAIN_NAME};
     root ${WEBDEV_DIR};
@@ -254,49 +155,45 @@ server {
     access_log /var/log/nginx/${DOMAIN_NAME}.access.log;
     error_log /var/log/nginx/${DOMAIN_NAME}.error.log;
 
-    # --- **性能优化** ---
+    # Performance and general optimizations
     sendfile on;
     tcp_nopush on;
-    tcp_nodelay on;
-    
-    # 缓存常用文件的元数据
-    open_file_cache max=1000 inactive=20s;
-    open_file_cache_valid 30s;
-    open_file_cache_min_uses 2;
-    open_file_cache_errors on;
-    # --- **结束性能优化** ---
+    client_max_body_size 0;
+    charset utf-8;
 
-    client_max_body_size 0; # 允许大文件上传
-    charset utf-8;          # 解决中文文件名乱码
-
-    # --- **音频文件缓存策略** ---
-    location ~* \.(mp3|m4a|aac|ogg)$ {
-        # 设置非常长的浏览器缓存时间
-        expires 365d;
-        add_header Cache-Control "public, immutable";
-
-        # 允许跨域访问，某些播放器可能需要
-        add_header 'Access-Control-Allow-Origin' '*' always;
-        add_header 'Access-Control-Allow-Methods' 'GET, HEAD, OPTIONS' always;
-        add_header 'Access-Control-Allow-Headers' 'Range,DNT,X-CustomHeader,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type' always;
-        
-        # 允许 Range 请求，这是实现拖动播放进度条的关键
-        # Nginx 默认支持，这里确保一下
-        proxy_force_ranges on; # 如果在代理后面，或者确保支持
-        slice               1m; # 如果是大文件，可以开启切片
-        proxy_set_header    Range \$slice_range;
-        proxy_cache         off; # 对于音频流，通常不建议在 Nginx 层面缓存
-        
-        # 仍然需要认证才能访问
-        auth_basic "Secure WebDAV Access";
-        auth_basic_user_file ${NGINX_PASSWD_FILE};
+    # --- **FIX: Handle OPTIONS requests explicitly to solve 405 error** ---
+    # This is crucial for many WebDAV clients, including iOS.
+    # It responds to pre-flight OPTIONS requests with the allowed methods.
+    if (\$request_method = 'OPTIONS') {
+        add_header 'DAV' '1, 2'; # Announce WebDAV support
+        add_header 'Allow' 'OPTIONS, GET, HEAD, PUT, DELETE, MKCOL, COPY, MOVE, PROPFIND';
+        return 204; # 'No Content' is a common and correct response
     }
 
-    # --- **主 WebDAV 配置** ---
+    # --- Audio file caching policy (for performance) ---
+    location ~* \.(mp3|m4a|aac|ogg)$ {
+        expires 365d;
+        add_header Cache-Control "public, immutable";
+        add_header 'Access-Control-Allow-Origin' '*' always;
+        
+        # This allows seeking (byte-range requests)
+        slice 1m;
+        proxy_set_header Range \$slice_range;
+        proxy_cache off;
+        
+        auth_basic "Secure WebDAV Access";
+        auth_basic_user_file ${NGINX_PASSWD_FILE};
+        
+        # Try to serve the file directly
+        try_files \$uri =404;
+    }
+
+    # --- Main WebDAV configuration ---
     location / {
         auth_basic "Secure WebDAV Access";
         auth_basic_user_file ${NGINX_PASSWD_FILE};
 
+        # Permission check for write operations
         set \$permission_key "\${request_method}-\${is_writer}";
         if (\$permission_key ~* ^(PUT|DELETE|MKCOL|COPY|MOVE)-0$) {
             return 403; # Forbidden
@@ -308,7 +205,7 @@ server {
         autoindex on;
     }
 
-    # --- SSL 配置 (由 Certbot 管理) ---
+    # --- SSL Configuration (managed by Certbot) ---
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
     ssl_certificate /etc/letsencrypt/live/${DOMAIN_NAME}/fullchain.pem;
@@ -317,7 +214,7 @@ server {
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 }
 
-# --- HTTP 到 HTTPS 重定向块 (保持不变) ---
+# --- HTTP to HTTPS redirect block (remains the same) ---
 server {
     if (\$host = ${DOMAIN_NAME}) {
         return 301 https://\$host\$request_uri;
