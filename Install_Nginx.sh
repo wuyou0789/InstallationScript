@@ -251,7 +251,7 @@ EOF_VHOST
         _error "在运行 Certbot 之前，Nginx 配置测试失败！请检查脚本生成的配置文件。"
     fi
     # 重载 Nginx，让它知道新站点的存在
-    _nginx_ctl "reload"
+    _nginx_ctl "restart"
 
     # --- 现在运行 Certbot ---
     _info "尝试使用 Certbot 为 ${DOMAIN_NAME} 获取并安装 SSL 证书..."
