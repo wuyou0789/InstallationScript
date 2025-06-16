@@ -246,6 +246,15 @@ EOF_VHOST
     # Certbot 已经修改了 vhost 文件，现在我们再次覆盖它以加入 WebDAV 逻辑
     _info "正在将 WebDAV 配置注入到已启用 SSL 的站点中..."
     cat <<EOF_VHOST_SSL | sudo tee "${nginx_vhost_path}" > /dev/null
+# This server block handles all HTTP (port 80) requests and redirects them to HTTPS.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${DOMAIN_NAME};
+    return 301 https://\$server_name\$request_uri;
+}
+
+# This server block handles all HTTPS (port 443) WebDAV logic.
 server {
     server_name ${DOMAIN_NAME};
     root ${WEBDEV_DIR};
@@ -270,22 +279,13 @@ server {
         autoindex on;
     }
 
-    listen 443 ssl http2; # managed by Certbot
-    listen [::]:443 ssl http2; # managed by Certbot
-    ssl_certificate /etc/letsencrypt/live/${DOMAIN_NAME}/fullchain.pem; # managed by Certbot
-    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN_NAME}/privkey.pem; # managed by Certbot
-    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
-}
-
-server {
-    if (\$host = ${DOMAIN_NAME}) {
-        return 301 https://\$host\$request_uri;
-    } # managed by Certbot
-
-    listen 80;
-    server_name ${DOMAIN_NAME};
-    return 404; # managed by Certbot
+    # SSL settings are managed by Certbot
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    ssl_certificate /etc/letsencrypt/live/${DOMAIN_NAME}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN_NAME}/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 }
 EOF_VHOST_SSL
 
