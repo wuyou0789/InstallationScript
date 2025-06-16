@@ -38,6 +38,7 @@ _warn() { printf "${YELLOW}[警告] %s${NC}\n" "$*"; }
 _error() { printf "${RED}[错误] %s${NC}\n" "$*"; exit 1; }
 
 # --- Prerequisite and Utility Functions ---
+
 check_root() { [[ $EUID -ne 0 ]] && _error "此脚本必须以 root 权限运行。请使用 'sudo'。"; }
 _exists() { command -v "$1" >/dev/null 2>&1; }
 
@@ -70,13 +71,33 @@ install_dependencies() {
     local pkgs_to_install=""
     ! _exists "nginx" && pkgs_to_install+="nginx "
     ! _exists "htpasswd" && pkgs_to_install+="apache2-utils "
-    ! _exists "certbot" && pkgs_to_install+="certbot python3-certbot-nginx "
+    
     if [[ -n "$pkgs_to_install" ]]; then
         _install_pkgs $pkgs_to_install
-    else
-        _info "所需核心依赖均已安装。"
     fi
+
+    _info "正在检查并安装 Certbot..."
+    if ! _exists "certbot"; then
+        _info "未找到 Certbot。将使用 Snap 进行安装 (现代 Ubuntu/Debian 推荐方式)..."
+        if ! _exists "snap"; then _install_pkgs "snapd"; fi
+        sudo snap install core; sudo snap refresh core
+        sudo apt-get remove -y certbot # 移除任何冲突的 apt 版本
+        sudo snap install --classic certbot || _error "通过 snap 安装 Certbot 失败。"
+        sudo ln -sf /snap/bin/certbot /usr/bin/certbot || _warn "创建 certbot 符号链接失败。"
+        _info "Certbot 已通过 Snap 成功安装。"
+    else
+        _info "检测到已安装的 Certbot。"
+        if [ -f /usr/bin/certbot ] && ! [ -L /usr/bin/certbot ] && ! [[ $(readlink -f /usr/bin/certbot) == *"/snap/"* ]]; then
+             _warn "检测到通过 APT 安装的旧版 Certbot。建议切换到 Snap 版本以获得最佳兼容性。"
+        fi
+    fi
+    
+    if ! sudo certbot plugins | grep -q 'nginx'; then
+        _error "Certbot Nginx 插件不可用！请检查 Certbot 安装。"
+    fi
+    _info "Certbot 及 Nginx 插件已准备就绪。"
 }
+
 
 _nginx_ctl() {
     local action="$1"
@@ -134,7 +155,7 @@ do_install() {
     while true; do
         read -s -p "请输入 ${ADMIN_USER} 的密码: " ADMIN_PASS; echo
         read -s -p "请再次输入密码进行确认: " ADMIN_PASS_CONFIRM; echo
-        if [ "$ADMIN_PASS" = "$ADMIN_PASS_CONFIRM" ] && [ -n "$ADMIN_PASS" ]; then break; else _warn "密码为空或两次输入的密码不匹配，请重试。"; fi
+        if [ "$ADMIN_PASS" = "$ADMIN_PASS_CONFIRM" ] && [ -n "$ADMIN_PASS" ]; then break; else _warn "密码为空或不匹配，请重试。"; fi
     done
 
     _info "正在准备 Nginx 配置文件..."
@@ -167,10 +188,13 @@ server {
     access_log /var/log/nginx/${DOMAIN_NAME}.access.log;
     error_log /var/log/nginx/${DOMAIN_NAME}.error.log;
 
+    client_max_body_size 0; # Allow large file uploads
+
     location / {
         auth_basic "Secure WebDAV Access";
         auth_basic_user_file ${NGINX_PASSWD_FILE};
 
+        # Fine-grained permission check using the map variable
         if (\$request_method ~ ^(PUT|DELETE|MKCOL|COPY|MOVE)$) {
             if (\$is_writer = 0) {
                 return 403; # Forbidden for non-writers
@@ -219,6 +243,7 @@ EOF_VHOST
         
         sudo mkdir -p "$SCRIPT_INSTALL_DIR"
         {
+            echo "# AWUS Configuration File (v${SCRIPT_VERSION})"
             echo "AWUS_DOMAIN_NAME=\"${DOMAIN_NAME}\""
             echo "AWUS_WEBDEV_DIR=\"${WEBDEV_DIR}\""
             echo "AWUS_ADMIN_USER=\"${ADMIN_USER}\""
@@ -240,19 +265,32 @@ update_user_permissions() {
     local map_file="$AWUS_NGINX_MAP_FILE"
 
     _info "正在更新用户 ${username} 的权限为 [${permission}]..."
+    sudo cp "$map_file" "$map_file.bak"
+    _info "权限文件已备份到 ${map_file}.bak"
+    
     local user_exists_in_map; sudo grep -q "^\s*${username}\s\+1;" "$map_file" && user_exists_in_map=true || user_exists_in_map=false
 
     if [[ "$permission" == "write" ]]; then
-        if $user_exists_in_map; then _info "用户 ${username} 已拥有写入权限。"; return 0; fi
+        if $user_exists_in_map; then _info "用户 ${username} 已拥有写入权限。"; sudo rm -f "$map_file.bak"; return 0; fi
         sudo sed -i "/# AWUS:END_WRITERS/i \    ${username} 1;" "$map_file"
     elif [[ "$permission" == "readonly" ]]; then
-        if $user_exists_in_map; then sudo sed -i "/^\s*${username}\s\+1;/d" "$map_file"; else _info "用户 ${username} 已是只读权限。"; return 0; fi
-    else _error "无效的权限级别: ${permission}"; return 1; fi
+        if $user_exists_in_map; then sudo sed -i "/^\s*${username}\s\+1;/d" "$map_file"; else _info "用户 ${username} 已是只读权限。"; sudo rm -f "$map_file.bak"; return 0; fi
+    else _error "无效的权限级别: ${permission}"; sudo rm -f "$map_file.bak"; return 1; fi
     
     _info "权限文件已更新，正在测试 Nginx 配置..."
-    if ! sudo nginx -t; then _error "Nginx 配置测试失败！请手动检查 ${map_file}。"; return 1; fi
+    if ! sudo nginx -t; then
+        _error "Nginx 配置测试失败！正在从备份恢复..."
+        sudo mv "$map_file.bak" "$map_file"
+        _error "配置文件已恢复。权限修改失败！"
+        return 1
+    fi
     
-    _info "配置测试通过，正在平滑重载 Nginx..."; _nginx_ctl "reload"
+    _info "配置测试通过，正在平滑重载 Nginx...";
+    if _nginx_ctl "reload"; then
+        sudo rm -f "$map_file.bak"
+    else
+        _warn "Nginx 重载失败！权限更改可能未生效。备份文件保留在 ${map_file}.bak"
+    fi
 }
 
 do_accounts_manage() {
@@ -262,13 +300,13 @@ do_accounts_manage() {
     case "$action" in
         view)
             _info "--- WebDAV 用户列表 (从 ${passwd_file}) ---"
-            sudo cat "${passwd_file}" | cut -d: -f1 | sed 's/^/  /' || _warn "密码文件为空。"
+            sudo cut -d: -f1 "${passwd_file}" | sed 's/^/  /' || _warn "密码文件为空或无法读取。"
             ;;
         add)
             if [[ -z "$username" ]]; then read -p "请输入要添加的用户名: " username; fi; if [[ -z "$username" ]]; then _error "用户名不能为空。"; fi
             if sudo grep -q "^${username}:" "${passwd_file}" &>/dev/null; then _error "用户 ${username} 已存在！"; fi
             local new_pass; while true; do read -s -p "为 ${username} 设置密码: " new_pass; echo; read -s -p "确认密码: " confirm_pass; echo; if [ "$new_pass" = "$confirm_pass" ] && [ -n "$new_pass" ]; then break; else _warn "密码为空或不匹配。"; fi; done
-            local htpasswd_opts="-b"; if [ ! -s "$passwd_file" ]; then htpasswd_opts="-cb"; fi
+            local htpasswd_opts="-b"; if ! [ -s "$passwd_file" ]; then _info "密码文件不存在或为空，将使用 -c 参数创建。"; htpasswd_opts="-cb"; fi
             if sudo htpasswd ${htpasswd_opts} "${passwd_file}" "${username}" "${new_pass}"; then
                 _info "用户 ${username} 已创建 (默认只读)。"
                 read -p "是否授予 ${username} 完全写入权限? (yes/no): " grant_perm
@@ -284,9 +322,9 @@ do_accounts_manage() {
         delete)
             if [[ -z "$username" ]]; then read -p "请输入要删除的用户名: " username; fi; if [[ -z "$username" ]]; then _error "用户名不能为空。"; fi
             if ! sudo grep -q "^${username}:" "${passwd_file}"; then _error "用户 ${username} 不存在。"; fi
-            _info "正在从写入权限组中移除 ${username}..."
+            _info "第一步：正在从写入权限组中移除 ${username}..."
             update_user_permissions "${username}" "readonly"
-            read -p "确定要从密码文件中永久删除 ${username} 吗? (yes/no): " confirm_del
+            read -p "$(echo -e ${YELLOW}"第二步：确定要从密码文件中永久删除 ${username} 吗? (yes/no): "${NC})" confirm_del
             if [[ "$confirm_del" == "yes" ]]; then
                 if sudo htpasswd -D "${passwd_file}" "${username}"; then _info "用户已从密码文件中删除。"; else _error "从密码文件中删除用户失败。"; fi
             else _info "操作已取消。"; fi
@@ -302,18 +340,16 @@ do_accounts_manage() {
     esac
 }
 
-# (The functions `do_uninstall` and `main_menu` are very similar to the previous version,
-# with text changed from Apache to Nginx. They are included here for completeness.)
 do_uninstall() {
     load_config; _warn "--- AWUS Nginx WebDAV 卸载向导 ---"
     echo "1) 仅移除 AWUS 配置 (保留 Nginx)"; echo "2) ${RED}彻底卸载 Nginx 及所有配置${NC}"; echo "0) 取消"
     read -p "请输入选项 [1, 2, 0]: " choice
     case "$choice" in
         1)
-            read -p "确定要移除 AWUS 脚本和 Nginx 站点配置吗? (yes/no): " confirm
+            read -p "$(echo -e ${YELLOW}"确定要移除 AWUS 脚本和 Nginx 站点配置吗? (yes/no): "${NC})" confirm
             if [[ "$confirm" =~ ^[Yy]$ ]]; then
                 if [ -n "$AWUS_DOMAIN_NAME" ]; then sudo rm -f "/etc/nginx/sites-enabled/${AWUS_DOMAIN_NAME}" "/etc/nginx/sites-available/${AWUS_DOMAIN_NAME}"; fi
-                [ -n "$AWUS_NGINX_MAP_FILE" ] && sudo rm -f "$AWUS_NGINX_MAP_FILE"
+                if [ -n "$AWUS_NGINX_MAP_FILE" ]; then sudo rm -f "$AWUS_NGINX_MAP_FILE"; fi
                 sudo rm -f "$SCRIPT_SELF_PATH" "$CONFIG_FILE" "$ALIAS_FILE"
                 _info "AWUS 配置已移除。建议运行 'sudo nginx -t && sudo systemctl reload nginx'。"
             fi
@@ -322,14 +358,15 @@ do_uninstall() {
             read -p "$(echo -e ${RED}"警告：这将完全卸载 Nginx！数据目录不会被删除。(yes/no): "${NC})" confirm
             if [[ "$confirm" =~ ^[Yy]$ ]]; then
                 if [ -n "$AWUS_DOMAIN_NAME" ]; then sudo rm -f "/etc/nginx/sites-enabled/${AWUS_DOMAIN_NAME}" "/etc/nginx/sites-available/${AWUS_DOMAIN_NAME}"; fi
-                [ -n "$AWUS_NGINX_MAP_FILE" ] && sudo rm -f "$AWUS_NGINX_MAP_FILE"
+                if [ -n "$AWUS_NGINX_MAP_FILE" ]; then sudo rm -f "$AWUS_NGINX_MAP_FILE"; fi
                 sudo rm -f "$SCRIPT_SELF_PATH" "$CONFIG_FILE" "$ALIAS_FILE"
                 _nginx_ctl "stop" && sudo systemctl disable nginx &>/dev/null
                 _info "正在使用 'apt-get purge' 彻底卸载 Nginx..."
                 sudo apt-get purge -y nginx nginx-common && sudo apt-get autoremove -y
                 sudo rm -rf /etc/nginx
                 _info "Nginx 已卸载。"
-                # The show_post_uninstall_message function should also be adapted for Nginx
+                # This helper function also needs to exist and be adapted for Nginx
+                # show_post_uninstall_message 
                 _warn "WebDAV 数据 (${AWUS_WEBDEV_DIR}) 和 SSL 证书 (${AWUS_DOMAIN_NAME}) 未被删除。"
             fi
             ;;
@@ -353,14 +390,14 @@ ${GREEN}3.${NC} 启动 Nginx      ${GREEN}4.${NC} 停止 Nginx      ${GREEN}5.${
 ${GREEN}6.${NC} 查看服务状态和配置信息
 ${BLUE}------------------ 账户管理 --------------------${NC}
 ${GREEN}10.${NC} 查看用户      ${GREEN}11.${NC} 添加用户
-${GREEN}12.${NC} 修改密码      ${GREEN}13.${NC} 删除用户      ${GREEN}14.${NC} ${YELLOW}设置权限${NC}
+${GREEN}12.${NC} 修改密码      ${GREEN}13.${NC} 删除用户      ${GREEN}14.${NC} ${YELLOW}设置权限 (读写/只读)${NC}
 ${BLUE}------------------------------------------------------${NC}
 ${GREEN}0.${NC} 退出脚本
 "
     read -rp "请输入选项: " option
     case "$option" in
         0) exit 0 ;;
-        1) do_install ;;
+        1) read -p "$(echo -e ${YELLOW}"此操作将引导您完成新的安装或重新配置。(yes/no): "${NC})" confirm; if [[ "$confirm" =~ ^[Yy]$ ]]; then do_install; else _info "操作已取消。"; fi ;;
         2) do_uninstall ;;
         3) _nginx_ctl "start" ;;
         4) _nginx_ctl "stop" ;;
@@ -382,16 +419,32 @@ main() {
     _os_check
 
     # If a specific command is given, execute it and exit.
+    # This allows direct command-line usage like: sudo ./awus.sh install
     case "$1" in
         install|uninstall|status)
-            "do_$1" # Dynamic function call
+            "do_$1"
             exit 0
             ;;
         accounts)
-            shift; do_accounts_manage "$@"; exit 0
+            shift; do_accounts_manage "$@"
+            exit 0
             ;;
         start|stop|restart)
-            "_nginx_ctl" "$1"; exit 0
+            "_nginx_ctl" "$1"
+            exit 0
+            ;;
+        help|-h|--help)
+            echo "Nginx WebDAV Ultimate Script (AWUS) v${SCRIPT_VERSION}"
+            echo "用法: $(basename "$0") [命令] [参数]"
+            echo "无参数运行将进入交互式菜单或安装向导。"
+            echo "主要命令:"
+            echo "  install          交互式安装或重新配置 WebDAV 服务。"
+            echo "  uninstall        卸载 AWUS 配置或 Nginx 服务。"
+            echo "  status           显示服务状态和配置信息。"
+            echo "  start|stop|restart 控制 Nginx 服务。"
+            echo "  accounts <subcommand> [username]"
+            echo "                   管理 WebDAV 用户 (subcommands: view, add, passwd, delete, setperm)。"
+            exit 0
             ;;
     esac
 
