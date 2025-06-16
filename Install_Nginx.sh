@@ -253,6 +253,7 @@ server {
     error_log /var/log/nginx/${DOMAIN_NAME}.error.log;
 
     client_max_body_size 0;
+    charset utf-8;
 
     location / {
         auth_basic "Secure WebDAV Access";
