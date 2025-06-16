@@ -66,6 +66,7 @@ _install_pkgs() {
     fi
 }
 
+# Checks for and installs necessary dependencies using modern best practices.
 install_dependencies() {
     _info "正在检查并安装所需依赖..."
     local pkgs_to_install=""
@@ -77,10 +78,10 @@ install_dependencies() {
         _install_pkgs $pkgs_to_install
     fi
 
-    # --- Certbot 安装逻辑 (修复版) ---
+    # --- Certbot 安装逻辑 (最终修复版) ---
     _info "正在检查并安装 Certbot..."
     
-    # 判断条件：如果 certbot 命令不存在，或者它不是一个指向 snap 目录的符号链接
+    # 更严格的判断条件：如果 certbot 命令不存在，或者它不是一个指向 snap 目录的符号链接
     # 这覆盖了“未安装”和“安装了错误的 APT 版本”两种情况
     if ! _exists "certbot" || ! [[ $(readlink -f $(which certbot) 2>/dev/null) == *"/snap/"* ]]; then
         if ! _exists "certbot"; then
@@ -95,11 +96,12 @@ install_dependencies() {
             _install_pkgs "snapd"
         fi
         
-        # 2. 确保 snap core 已更新 (这步很快，且能解决一些 snap 的奇怪问题)
+        # 2. 确保 snap core 已更新
         sudo snap install core &>/dev/null; sudo snap refresh core &>/dev/null
         
         # 3. 移除任何通过 apt 安装的旧 Certbot 包 (非常重要，防止冲突)
         _info "正在清理任何可能冲突的旧 Certbot (APT) 包..."
+        # 使用通配符确保所有相关包被移除
         sudo apt-get remove -y certbot* python3-certbot-* &>/dev/null
         sudo apt-get autoremove -y &>/dev/null
 
