@@ -180,14 +180,14 @@ do_install() {
     while true; do
         read -s -p "请输入 ${ADMIN_USER} 的密码: " ADMIN_PASS; echo
         read -s -p "请再次输入密码进行确认: " ADMIN_PASS_CONFIRM; echo
-        if [ "$ADMIN_PASS" = "$ADMIN_PASS_CONFIRM" ] && [ -n "$ADMIN_PASS" ]; then break; else _warn "密码为空或不匹配，请重试。"; fi
+        if [ "$ADMIN_PASS" = "$ADMIN_PASS_CONFIRM" ] && [ -n "$ADMIN_PASS" ]; then break; else _warn "密码为空或两次输入的密码不匹配，请重试。"; fi
     done
 
     _info "正在准备 Nginx 配置文件..."
+    # 1. 权限映射文件
     local nginx_map_file="/etc/nginx/conf.d/awus_webdav_permissions.conf"
     _info "正在创建权限映射文件: ${nginx_map_file}"
     cat <<EOF_MAP | sudo tee "${nginx_map_file}" > /dev/null
-# This file is managed by AWUS script. Do not edit manually.
 map \$remote_user \$is_writer {
     default 0;
     # AWUS:START_WRITERS
@@ -196,19 +196,15 @@ map \$remote_user \$is_writer {
 }
 EOF_MAP
 
+    # 2. 虚拟主机配置文件
     local nginx_vhost_path="/etc/nginx/sites-available/${DOMAIN_NAME}"
     _info "正在创建虚拟主机文件: ${nginx_vhost_path}"
     cat <<EOF_VHOST | sudo tee "${nginx_vhost_path}" > /dev/null
+# This server block will be modified by Certbot to handle SSL
 server {
     listen 80;
     server_name ${DOMAIN_NAME};
-    location / {
-        return 301 https://\$host\$request_uri;
-    }
-}
-server {
-    # listen 443 ssl http2; # Certbot will handle this
-    server_name ${DOMAIN_NAME};
+
     root ${WEBDEV_DIR};
     access_log /var/log/nginx/${DOMAIN_NAME}.access.log;
     error_log /var/log/nginx/${DOMAIN_NAME}.error.log;
@@ -219,12 +215,13 @@ server {
         auth_basic "Secure WebDAV Access";
         auth_basic_user_file ${NGINX_PASSWD_FILE};
 
-        # Fine-grained permission check using the map variable
-        if (\$request_method ~ ^(PUT|DELETE|MKCOL|COPY|MOVE)$) {
-            if (\$is_writer = 0) {
-                return 403; # Forbidden for non-writers
-            }
+        # --- Permission Check (No nested ifs) ---
+        set \$permission_key "\${request_method}-\${is_writer}";
+        if (\$permission_key ~* ^(PUT|DELETE|MKCOL|COPY|MOVE)-0$) {
+            return 403; # Forbidden for non-writers
         }
+        # --- End Permission Check ---
+
         dav_methods PUT DELETE MKCOL COPY MOVE;
         dav_access user:rwx group:rwx all:r;
         create_full_put_path on;
@@ -243,32 +240,43 @@ EOF_VHOST
     sudo chmod 640 "${NGINX_PASSWD_FILE}"
     sudo htpasswd -cb "${NGINX_PASSWD_FILE}" "${ADMIN_USER}" "${ADMIN_PASS}" || _error "创建管理员用户失败。"
 
+    # --- **重要顺序调整** ---
+    _info "正在启用新站点，以便 Certbot 可以找到它..."
+    sudo ln -sf "/etc/nginx/sites-available/${DOMAIN_NAME}" "/etc/nginx/sites-enabled/"
+    sudo rm -f /etc/nginx/sites-enabled/default &>/dev/null # 移除默认站点，避免冲突
+
+    # 在运行 certbot 之前，先测试一下基本的 Nginx 配置
+    _info "初步测试 Nginx 配置..."
+    if ! sudo nginx -t; then
+        _error "在运行 Certbot 之前，Nginx 配置测试失败！请检查脚本生成的配置文件。"
+    fi
+    # 重载 Nginx，让它知道新站点的存在
+    _nginx_ctl "reload"
+
+    # --- 现在运行 Certbot ---
     _info "尝试使用 Certbot 为 ${DOMAIN_NAME} 获取并安装 SSL 证书..."
     read -p "请输入用于 Let's Encrypt 的邮箱 (推荐，用于接收续期提醒): " cert_email
     if [ -n "$cert_email" ]; then
-        sudo certbot --nginx -d "${DOMAIN_NAME}" --non-interactive --agree-tos --email "${cert_email}" || _error "Certbot 获取或安装证书失败。"
+        # Certbot 现在会找到并修改我们已经启用的那个配置文件
+        sudo certbot --nginx -d "${DOMAIN_NAME}" --non-interactive --agree-tos --email "${cert_email}" --redirect || _error "Certbot 获取或安装证书失败。"
     else
         _warn "未提供邮箱，将尝试无邮箱注册。您将不会收到证书到期提醒。"
-        sudo certbot --nginx -d "${DOMAIN_NAME}" --non-interactive --agree-tos --register-unsafely-without-email || _error "Certbot 获取或安装证书失败。"
+        sudo certbot --nginx -d "${DOMAIN_NAME}" --non-interactive --agree-tos --register-unsafely-without-email --redirect || _error "Certbot 获取或安装证书失败。"
     fi
+    # Certbot 会自动重载 Nginx
 
-    _info "启用新站点..."
-    sudo ln -sf "/etc/nginx/sites-available/${DOMAIN_NAME}" "/etc/nginx/sites-enabled/"
-    sudo rm -f /etc/nginx/sites-enabled/default &>/dev/null
-
-    _info "测试 Nginx 配置..."
-    if ! sudo nginx -t; then _error "Nginx 配置测试失败！"; fi
+    _info "最终测试 Nginx 配置..."
+    if ! sudo nginx -t; then _error "Certbot 修改后，Nginx 配置测试失败！"; fi
 
     _info "配置防火墙 (UFW)..."
     if _exists "ufw"; then sudo ufw allow 'Nginx Full'; sudo ufw reload || _warn "UFW reload 失败。"; else _warn "未找到 UFW，请手动配置防火墙。"; fi
 
-    if _nginx_ctl "restart"; then
+    if _nginx_ctl "restart"; then # 最后用 restart 确保一切都以最新状态运行
         _info "${GREEN}--- Nginx WebDAV 安装和配置成功！ ---${NC}"
         _info "服务应该可以通过 https://${DOMAIN_NAME} 访问。"
         
         sudo mkdir -p "$SCRIPT_INSTALL_DIR"
         {
-            echo "# AWUS Configuration File (v${SCRIPT_VERSION})"
             echo "AWUS_DOMAIN_NAME=\"${DOMAIN_NAME}\""
             echo "AWUS_WEBDEV_DIR=\"${WEBDEV_DIR}\""
             echo "AWUS_ADMIN_USER=\"${ADMIN_USER}\""
