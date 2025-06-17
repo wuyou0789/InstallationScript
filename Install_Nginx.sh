@@ -92,7 +92,7 @@ install_custom_nginx() {
         return
     fi
     
-    local deb_url="https://github.com/wuyou0789/InstallationScript/releases/download/v2.0.0-nginx-custom/nginx-custom-webdav_1.28.0-1_amd64.deb"
+    local deb_url="https://github.com/wuyou0789/InstallationScript/releases/download/nginx-custom-webdav/nginx-custom-webdav_1.28.0-1_amd64.deb"
     local deb_path="/tmp/nginx-custom-webdav.deb"
     _info "正在从 GitHub 下载定制的 Nginx 包...";
     if ! curl -L --fail -o "${deb_path}" "${deb_url}"; then
