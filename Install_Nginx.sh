@@ -353,39 +353,60 @@ ${GREEN}0.${NC} 退出脚本
 # --- Script Entry Point ---
 main() {
     check_root
-    (
-        flock -n 200 || _error "另一个脚本实例正在运行。请等待其完成后再试。"
-        
-        _os_check
-        case "$1" in
-            install)
-                read -r -p "$(echo -e ${YELLOW}"您正在尝试执行安装/重新配置。\n如果已存在 AWUS 配置，相关文件可能会被覆盖。\n确定要继续吗? (y/n): "${NC})" confirm
-                if [[ "$confirm" =~ ^[Yy] ]]; then do_install; else _info "操作已取消。"; fi
-                exit 0 ;;
-            status|uninstall) "do_$1"; exit 0 ;;
-            start|stop|restart) "_nginx_ctl" "$1"; exit 0 ;;
-            accounts) shift; do_accounts_manage "$@"; exit 0 ;;
-            help|-h|--help)
-                echo "Nginx WebDAV Ultimate Script (AWUS) v${SCRIPT_VERSION}"
-                echo "用法: $(basename "$0") [命令] [参数]"
-                echo "无参数运行将进入交互式菜单或安装向导。"; echo
-                echo "主要命令:";
-                echo "  install          交互式安装或重新配置 WebDAV 服务。"
-                echo "  uninstall        卸载 AWUS 配置或 Nginx 服务。"
-                echo "  status           显示服务状态和配置信息。"
-                echo "  start|stop|restart 控制 Nginx 服务。"
-                echo "  accounts <subcommand> [username] 管理用户 (subcommands: view, add, passwd, delete)。"
-                exit 0 ;;
-        esac
+    _os_check
 
-        if [[ -f "$SCRIPT_SELF_PATH" && -f "$CONFIG_FILE" ]]; then
-            while true; do main_menu; done
+    # -t 0 checks if file descriptor 0 (stdin) is connected to a terminal.
+    # This allows us to know if the script is being run interactively.
+    local is_interactive=false
+    if [[ -t 0 ]]; then
+        is_interactive=true
+    fi
+
+    case "$1" in
+        install)
+            local confirm="no"
+            if $is_interactive; then
+                # Only ask for confirmation in an interactive session.
+                read -r -p "$(echo -e ${YELLOW}"您正在尝试执行安装/重新配置。\n如果已存在 AWUS 配置，相关文件可能会被覆盖。\n确定要继续吗? (y/n): "${NC})" confirm
+            else
+                # In a non-interactive session (like curl | bash), assume 'yes'.
+                _warn "在非交互式模式下运行，将自动继续安装..."
+                confirm="yes"
+            fi
+            
+            if [[ "$confirm" =~ ^[Yy] ]]; then
+                do_install
+            else
+                _info "操作已取消。"
+            fi
+            exit 0
+            ;;
+        status|uninstall) "do_$1"; exit 0 ;;
+        start|stop|restart) "_nginx_ctl" "$1"; exit 0 ;;
+        accounts) shift; do_accounts_manage "$@"; exit 0 ;;
+        help|-h|--help)
+            # ... help text ...
+            exit 0
+            ;;
+    esac
+
+    # If no command is given, it must be interactive.
+    if ! $is_interactive; then
+        _error "在非交互式模式下，必须提供一个明确的命令 (如 'install')。用法: curl ... | sudo bash -s -- install"
+    fi
+
+    if [[ -f "$SCRIPT_SELF_PATH" && -f "$CONFIG_FILE" ]]; then
+        while true; do main_menu; done
+    else
+        _info "欢迎使用 AWUS (Nginx 版)!"
+        read -r -p "脚本似乎未安装。是否现在开始交互式安装? (y/n): " first_run_choice
+        if [[ "$first_run_choice" =~ ^[Yy] ]]; then
+            do_install
         else
-            _info "欢迎使用 AWUS (Nginx 定制版)!";
-            read -r -p "脚本似乎未安装。是否现在开始交互式安装? (y/n): " choice
-            if [[ "$choice" =~ ^[Yy] ]]; then do_install; else _info "安装已取消。"; fi
+            _info "安装已取消。"
         fi
-    ) 200> "$LOCK_FILE"
+    fi
 }
 
+# Always call main to start the script.
 main "$@"
