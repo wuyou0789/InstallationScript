@@ -137,15 +137,26 @@ install_custom_nginx() {
 }
 
 do_install() {
-    local DOMAIN_NAME WEBDEV_DIR NGINX_PASSWD_FILE ADMIN_USER ADMIN_PASS nginx_vhost_path temp_nginx_vhost_path
+    local DOMAIN_NAME WEBDEV_DIR NGINX_PASSWD_FILE ADMIN_USER ADMIN_PASS
+    local nginx_vhost_path temp_nginx_vhost_path nginx_main_conf="/etc/nginx/nginx.conf"
+    
     trap 'install_cleanup' ERR
+
     install_cleanup() {
-        _warn "\n--- 安装过程中发生错误，正在执行自动清理... ---"; _nginx_ctl "stop" &>/dev/null || true
+        _warn "\n--- 安装过程中发生错误，正在执行自动清理... ---";
+        systemctl stop nginx &>/dev/null || true 
+        # Restore nginx.conf from backup if one was made and script is aborting
+        if [ -f "${nginx_main_conf}.awus.bak" ]; then
+            _warn "正在从备份恢复 ${nginx_main_conf}..."
+            mv "${nginx_main_conf}.awus.bak" "${nginx_main_conf}" || _warn "恢复 nginx.conf 失败。"
+        fi
         if [ -n "${DOMAIN_NAME:-}" ]; then
-            _warn "移除为 ${DOMAIN_NAME} 创建的 Nginx 配置..."; rm -f "/etc/nginx/sites-enabled/${DOMAIN_NAME}" "/etc/nginx/sites-available/${DOMAIN_NAME}"
+            _warn "移除为 ${DOMAIN_NAME} 创建的 Nginx 配置...";
+            rm -f "/etc/nginx/sites-enabled/${DOMAIN_NAME}" "/etc/nginx/sites-available/${DOMAIN_NAME}"
             if [ -n "${temp_nginx_vhost_path:-}" ]; then rm -f "/etc/nginx/sites-enabled/$(basename "$temp_nginx_vhost_path")" "$temp_nginx_vhost_path"; fi
             if _exists "${CERTBOT_CMD}" && [ -d "/etc/letsencrypt/live/${DOMAIN_NAME}" ]; then _warn "删除为 ${DOMAIN_NAME} 创建的 SSL 证书..."; "${CERTBOT_CMD}" delete --cert-name "$DOMAIN_NAME" --non-interactive; fi
-        fi; _info "--- 清理完成 ---"
+        fi
+        _info "--- 清理完成 ---"
     }
     
     _os_check; install_dependencies; install_custom_nginx
@@ -157,12 +168,55 @@ do_install() {
     WEBDEV_DIR=$(realpath -m "$WEBDEV_DIR")
     local default_passwd_file="$DEFAULT_NGINX_PASSWD_FILE"; read -r -p "请输入 WebDAV 密码文件路径 [${default_passwd_file}]: " NGINX_PASSWD_FILE; NGINX_PASSWD_FILE=${NGINX_PASSWD_FILE:-$default_passwd_file}
     while true; do read -r -p "请输入管理员用户名: " ADMIN_USER; if [[ "$ADMIN_USER" =~ ^[a-zA-Z0-9._-]+$ ]]; then break; else _warn "用户名包含无效字符。"; fi; done
-    while true; do read -r -s -p "为 ${ADMIN_USER} 设置密码: " ADMIN_PASS; echo; read -r -s -p "确认密码: " confirm_pass; echo; if [[ "$ADMIN_PASS" == "$confirm_pass" && -n "$ADMIN_PASS" ]]; then break; else _warn "密码为空或不匹配。"; fi; done
+    local ADMIN_PASS; while true; do read -r -s -p "为 ${ADMIN_USER} 设置密码: " ADMIN_PASS; echo; read -r -s -p "确认密码: " confirm_pass; echo; if [[ "$ADMIN_PASS" == "$confirm_pass" && -n "$ADMIN_PASS" ]]; then break; else _warn "密码为空或不匹配。"; fi; done
 
     _info "正在准备 Nginx 配置文件...";
-    mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/nginx/conf.d /var/log/nginx "/var/cache/nginx/client_temp"
-    if ! grep -q 'dav_ext_lock_zone' /etc/nginx/nginx.conf; then sed -i '/^[[:space:]]*http[[:space:]]*{/a \    dav_ext_lock_zone zone=webdav:10m;' /etc/nginx/nginx.conf; fi
+    # --- **CRITICAL FIX: Create a brand new, minimal nginx.conf** ---
+    _info "正在创建全新的 Nginx 主配置文件 (${nginx_main_conf})..."
+    if [ -f "${nginx_main_conf}" ]; then
+        mv "${nginx_main_conf}" "${nginx_main_conf}.awus.bak"
+        _info "现有的 ${nginx_main_conf} 已备份到 ${nginx_main_conf}.awus.bak"
+    fi
+    cat <<EOF_NGINX_CONF | tee "${nginx_main_conf}" > /dev/null
+user www-data;
+worker_processes auto;
+pid /var/run/nginx.pid;
+# include /etc/nginx/modules-enabled/*.conf; # Optional, if your custom build uses it
+
+events {
+    worker_connections 768;
+    # multi_accept on;
+}
+
+http {
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+    server_tokens off;
+
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    access_log /var/log/nginx/access.log;
+    error_log /var/log/nginx/error.log;
+
+    # gzip on;
+    # gzip_disable "msie6";
+    # ... other gzip settings if needed ...
+
+    dav_ext_lock_zone zone=webdav:10m;
+
+    include /etc/nginx/conf.d/*.conf;
+    include /etc/nginx/sites-enabled/*;
+}
+EOF_NGINX_CONF
+    _info "全新的 ${nginx_main_conf} 创建成功。"
+    # --- **END CRITICAL FIX** ---
     
+    mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/nginx/conf.d /var/log/nginx "/var/cache/nginx/client_temp"
+        
     temp_nginx_vhost_path="/etc/nginx/sites-available/${DOMAIN_NAME}.certbot-setup.conf"
     cat <<EOF_VHOST_TEMP | tee "${temp_nginx_vhost_path}" > /dev/null
 server { listen 80; server_name ${DOMAIN_NAME}; root /var/www/html; location /.well-known/acme-challenge/ { allow all; } location / { return 404; }}
@@ -174,28 +228,31 @@ EOF_VHOST_TEMP
     htpasswd -cb "${NGINX_PASSWD_FILE}" "${ADMIN_USER}" "${ADMIN_PASS}" || _error "创建管理员用户失败。"
 
     _info "正在启用临时站点并重启 Nginx (为 Certbot 做准备)...";
-    _warn "脚本将禁用 Nginx 默认站点。"; read -r -p "按 Enter 继续...";
-    rm -f /etc/nginx/sites-enabled/default || true; rm -f "/etc/nginx/sites-enabled/${DOMAIN_NAME}" || true
+    rm -f /etc/nginx/sites-enabled/default || true
+    rm -f "/etc/nginx/sites-enabled/${DOMAIN_NAME}" || true 
     ln -sf "$temp_nginx_vhost_path" "/etc/nginx/sites-enabled/"
-    nginx -t || _error "Nginx 临时配置测试失败。"; _nginx_ctl "restart"
     
-    local cert_email certbot_cmd_array=("${CERTBOT_CMD}" "certonly" "--non-interactive" "--agree-tos" "--nginx" "-d" "${DOMAIN_NAME}")
-    read -r -p "请输入用于 Let's Encrypt 的邮箱 (强烈推荐): " cert_email
-    if [[ -n "$cert_email" ]]; then certbot_cmd_array+=("--email" "${cert_email}"); else _warn "未提供邮箱！"; certbot_cmd_array+=("--register-unsafely-without-email"); fi
+    nginx -t || _error "Nginx 临时配置测试失败。"; 
+    _nginx_ctl "restart" || _error "Nginx 初始重启失败。"
+    
+    _info "正在处理 SSL 证书...";
+    local cert_email email_option cert_command_array=("${CERTBOT_CMD}" "certonly" "--non-interactive" "--agree-tos" "--nginx" "-d" "${DOMAIN_NAME}")
+    read -r -p "请输入用于 Let's Encrypt 的邮箱 (推荐): " cert_email
+    if [[ -n "$cert_email" ]]; then cert_command_array+=("--email" "${cert_email}"); else _warn "未提供邮箱！"; cert_command_array+=("--register-unsafely-without-email"); fi
 
     if [ -d "/etc/letsencrypt/live/${DOMAIN_NAME}" ]; then
         _warn "检测到 ${DOMAIN_NAME} 的证书已存在。"; read -r -p "[1] 更新现有 [2] 强制重申 [0] 中止: " cert_choice
         case "$cert_choice" in
-            1) _info "尝试更新现有证书..."; local update_cmd=("${certbot_cmd_array[@]}" "--keep-until-expiring"); "${update_cmd[@]}" || _error "Certbot 更新失败。";;
-            2) _info "强制重新申请证书..."; local renew_cmd=("${certbot_cmd_array[@]}" "--force-renewal"); "${renew_cmd[@]}" || _error "Certbot 重申失败。";;
+            1) _info "尝试更新现有证书..."; local update_cmd=("${cert_command_array[@]}" "--keep-until-expiring"); "${update_cmd[@]}" || _error "Certbot (更新现有) 失败。";;
+            2) _info "强制重新申请证书..."; local renew_cmd=("${cert_command_array[@]}" "--force-renewal"); "${renew_cmd[@]}" || _error "Certbot (强制重新申请) 失败。";;
             *) _error "操作中止。";;
         esac
     else
-        _info "正在申请新的 SSL 证书..."; "${certbot_cmd_array[@]}" || _error "Certbot 首次申请失败。"
+        _info "正在申请新的 SSL 证书..."; "${cert_command_array[@]}" || _error "Certbot (首次申请) 失败。"
     fi
     
     _info "SSL 证书已处理。正在生成最终的 Nginx 配置文件..."
-    nginx_vhost_path="/etc/nginx/sites-available/${DOMAIN_NAME}"
+    nginx_vhost_path="/etc/nginx/sites-available/${DOMAIN_NAME}" # This is our final config file
     cat <<EOF_VHOST_FINAL | tee "${nginx_vhost_path}" > /dev/null
 server {
     listen 80; listen [::]:80; server_name ${DOMAIN_NAME};
@@ -203,13 +260,17 @@ server {
     location / { return 301 https://\$server_name\$request_uri; }
 }
 server {
-    listen 443 ssl; listen [::]:443 ssl; http2 on;
+    listen 443 ssl http2; listen [::]:443 ssl http2; # Corrected based on nginx -t warning
     server_name ${DOMAIN_NAME};
     root ${WEBDEV_DIR};
 
-    access_log /var/log/nginx/${DOMAIN_NAME}.access.log; error_log /var/log/nginx/${DOMAIN_NAME}.error.log warn;
+    access_log /var/log/nginx/${DOMAIN_NAME}.access.log;
+    error_log /var/log/nginx/${DOMAIN_NAME}.error.log warn;
+
     client_max_body_size 0; charset utf-8;
+    
     location ~ /\.(_.*|DS_Store|thumbs\.db)$ { return 403; }
+
     location / {
         auth_basic "Secure WebDAV"; auth_basic_user_file ${NGINX_PASSWD_FILE};
         dav_methods PUT DELETE MKCOL COPY MOVE;
@@ -218,6 +279,7 @@ server {
         create_full_put_path on; autoindex on; dav_ext_lock zone=webdav;
         more_set_headers "DAV: 1, 2";
     }
+
     ssl_certificate /etc/letsencrypt/live/${DOMAIN_NAME}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${DOMAIN_NAME}/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
@@ -239,6 +301,7 @@ EOF_VHOST_FINAL
     { echo "AWUS_DOMAIN_NAME=\"${DOMAIN_NAME}\""; echo "AWUS_WEBDEV_DIR=\"${WEBDEV_DIR}\""; echo "AWUS_NGINX_PASSWD_FILE=\"${NGINX_PASSWD_FILE}\""; } > "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"; setup_script_invocation
 }
+
 
 do_status() {
     load_config; _info "--- Nginx WebDAV 服务状态 ---"
