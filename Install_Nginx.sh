@@ -16,6 +16,8 @@
 # --- Strict Mode & Environment ---
 set -euo pipefail
 IFS=$'\n\t'
+readonly SCRIPT_VERSION="3.2.1-nginx-final"
+readonly RED='\033[1;31m'
 
 # --- Global Constants ---
 readonly SCRIPT_VERSION="3.2.0-nginx-custom"
@@ -32,6 +34,10 @@ readonly CONFIG_FILE="${SCRIPT_INSTALL_DIR}/config.conf"
 readonly DEFAULT_NGINX_PASSWD_FILE="/etc/nginx/webdav.passwd"
 readonly ALIAS_FILE="/etc/profile.d/awus-alias.sh"
 readonly LOCK_FILE="/var/tmp/awus.lock"
+readonly ALIAS_FILE="/etc/profile.d/awus-alias.sh"
+
+# --- Logging and Status Functions ---
+_info() { printf "${GREEN}[信息] %s${NC}\n" "$*"; }
 
 # --- Helper Functions ---
 _info() { printf "${GREEN}[信息] %s${NC}\n" "$*"; }
@@ -350,55 +356,48 @@ ${GREEN}0.${NC} 退出脚本
     if [[ "$option" != "0" ]]; then echo && read -n 1 -s -r -p "按任意键返回主菜单..."; fi
 }
 
-# --- Script Entry Point ---
+# --- Script Entry Point (NEW SIMPLIFIED LOGIC) ---
 main() {
     check_root
     _os_check
 
-    # -t 0 checks if file descriptor 0 (stdin) is connected to a terminal.
-    # This allows us to know if the script is being run interactively.
-    local is_interactive=false
-    if [[ -t 0 ]]; then
-        is_interactive=true
+    # If the first argument is 'install', run it directly without questions.
+    if [[ "${1:-}" == "install" ]]; then
+        _warn "检测到 'install' 命令，将开始全自动安装..."
+        do_install
+        exit 0
     fi
 
-    case "$1" in
-        install)
-            local confirm="no"
-            if $is_interactive; then
-                # Only ask for confirmation in an interactive session.
-                read -r -p "$(echo -e ${YELLOW}"您正在尝试执行安装/重新配置。\n如果已存在 AWUS 配置，相关文件可能会被覆盖。\n确定要继续吗? (y/n): "${NC})" confirm
-            else
-                # In a non-interactive session (like curl | bash), assume 'yes'.
-                _warn "在非交互式模式下运行，将自动继续安装..."
-                confirm="yes"
-            fi
-            
-            if [[ "$confirm" =~ ^[Yy] ]]; then
-                do_install
-            else
-                _info "操作已取消。"
-            fi
+    # Handle other direct commands
+    case "${1:-}" in
+        status|uninstall)
+            if [ ! -f "$CONFIG_FILE" ]; then _error "AWUS 未安装。请先运行 'install' 命令。"; fi
+            "do_$1"
             exit 0
             ;;
-        status|uninstall) "do_$1"; exit 0 ;;
-        start|stop|restart) "_nginx_ctl" "$1"; exit 0 ;;
-        accounts) shift; do_accounts_manage "$@"; exit 0 ;;
+        start|stop|restart)
+            if [ ! -f "$CONFIG_FILE" ]; then _error "AWUS 未安装。"; fi
+            "_nginx_ctl" "$1"
+            exit 0
+            ;;
+        accounts)
+            if [ ! -f "$CONFIG_FILE" ]; then _error "AWUS 未安装。"; fi
+            shift; do_accounts_manage "$@"
+            exit 0
+            ;;
         help|-h|--help)
-            # ... help text ...
+            # ... (帮助信息) ...
             exit 0
             ;;
     esac
 
-    # If no command is given, it must be interactive.
-    if ! $is_interactive; then
-        _error "在非交互式模式下，必须提供一个明确的命令 (如 'install')。用法: curl ... | sudo bash -s -- install"
-    fi
-
-    if [[ -f "$SCRIPT_SELF_PATH" && -f "$CONFIG_FILE" ]]; then
+    # If no arguments are given, proceed with interactive logic.
+    if [ -f "$SCRIPT_SELF_PATH" ] && [ -f "$CONFIG_FILE" ]; then
+        # If installed, show menu
         while true; do main_menu; done
     else
-        _info "欢迎使用 AWUS (Nginx 版)!"
+        # If not installed, prompt to install
+        _info "欢迎使用 AWUS (Nginx 定制版)!"
         read -r -p "脚本似乎未安装。是否现在开始交互式安装? (y/n): " first_run_choice
         if [[ "$first_run_choice" =~ ^[Yy] ]]; then
             do_install
