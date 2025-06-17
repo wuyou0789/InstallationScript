@@ -146,6 +146,10 @@ EOF_VHOST
     mkdir -p "${WEBDEV_DIR}" && chown www-data:www-data "${WEBDEV_DIR}" && chmod 775 "${WEBDEV_DIR}"
     touch "${NGINX_PASSWD_FILE}" && chown root:www-data "${NGINX_PASSWD_FILE}" && chmod 640 "${NGINX_PASSWD_FILE}"
     htpasswd -cb "${NGINX_PASSWD_FILE}" "${ADMIN_USER}" "${ADMIN_PASS}" || _error "创建管理员用户失败。"
+    # --- **FIX: Manually create necessary directories for our custom Nginx build** ---
+    _info "正在为定制版 Nginx 创建必要的日志和缓存目录..."
+    mkdir -p /var/log/nginx
+    mkdir -p /var/cache/nginx/client_temp
 
     _info "正在启用新站点并重启 Nginx...";
     _warn "脚本将禁用 Nginx 默认站点..."; read -r -p "按 Enter 继续...";
