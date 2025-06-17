@@ -3,7 +3,7 @@
 #================================================================================
 # Nginx WebDAV Ultimate Script (AWUS) - Custom Build Edition
 #
-# Version: 3.1.1 (Final Cleanup Release)
+# Version: 3.2.0 (Production Ready)
 # Author: wuyou0789 & AI Assistant
 # GitHub: https://github.com/wuyou0789/InstallationScript
 # License: MIT
@@ -18,7 +18,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 # --- Global Constants ---
-readonly SCRIPT_VERSION="3.1.1-nginx-custom"
+readonly SCRIPT_VERSION="3.2.0-nginx-custom"
 readonly RED='\033[1;31m'
 readonly GREEN='\033[1;32m'
 readonly YELLOW='\033[1;33m'
@@ -130,7 +130,7 @@ load_config() {
 setup_script_invocation() {
     _info "正在安装脚本以供后续使用..."; mkdir -p "$SCRIPT_INSTALL_DIR"; cp -f "$0" "$SCRIPT_SELF_PATH"; chmod +x "$SCRIPT_SELF_PATH"
     echo "alias webdav='sudo bash ${SCRIPT_SELF_PATH}'" > "$ALIAS_FILE"
-    _info "别名 'webdav' 已设置。请运行 'source ${ALIAS_FILE}' 或重新登录以使用。对于 Zsh 用户，可能需要将此别名手动添加到您的 .zshrc 文件中。"
+    _info "别名 'webdav' 已创建。请运行 'source ${ALIAS_FILE}' 或重新登录以使用。对于 Zsh 用户，可能需要将此别名手动添加到您的 .zshrc 文件中。"
 }
 
 do_install() {
@@ -139,7 +139,7 @@ do_install() {
 
     install_cleanup() {
         _warn "\n--- 安装过程中发生错误，正在执行自动清理... ---"; _nginx_ctl "stop" &>/dev/null
-        if [ -n "$DOMAIN_NAME" ]; then
+        if [ -n "${DOMAIN_NAME:-}" ]; then
             _warn "移除为 ${DOMAIN_NAME} 创建的 Nginx 配置..."; rm -f "/etc/nginx/sites-enabled/${DOMAIN_NAME}" "/etc/nginx/sites-available/${DOMAIN_NAME}"
             if _exists "certbot" && [ -d "/etc/letsencrypt/live/${DOMAIN_NAME}" ]; then _warn "删除为 ${DOMAIN_NAME} 创建的 SSL 证书..."; certbot delete --cert-name "$DOMAIN_NAME" --non-interactive; fi
         fi
@@ -186,7 +186,7 @@ EOF_VHOST
         _warn "检测到 ${DOMAIN_NAME} 的证书已存在。"; read -r -p "您希望如何处理? [1] 使用现有证书 [2] 强制续订 [0] 中止: " cert_choice
         case "$cert_choice" in
             1) _info "将使用现有证书。";;
-            2) _info "正在强制续订证书..."; certbot certonly --nginx --force-renewal -d "${DOMAIN_NAME}" --non-interactive --agree-tos || _error "证书续订失败。";;
+            2) _info "正在强制续订证书..."; certbot --nginx --force-renewal -d "${DOMAIN_NAME}" --non-interactive --agree-tos || _error "证书续订失败。";;
             *) _error "操作中止。";;
         esac
     else
@@ -213,7 +213,7 @@ server {
     error_log /var/log/nginx/${DOMAIN_NAME}.error.log warn;
 
     client_max_body_size 0; charset utf-8;
-    dav_ext_lock_zone zone=webdav:10m;
+    
     location ~ /\.(_.*|DS_Store|thumbs\.db)$ { return 403; }
 
     location / {
@@ -294,7 +294,7 @@ do_uninstall() {
         1)
             read -r -p "$(echo -e ${YELLOW}"确定要移除 AWUS 脚本和 Nginx 站点配置吗? (y/n): "${NC})" confirm
             if [[ "$confirm" =~ ^[Yy] ]]; then
-                if [ -n "$AWUS_DOMAIN_NAME" ]; then rm -f "/etc/nginx/sites-enabled/${AWUS_DOMAIN_NAME}" "/etc/nginx/sites-available/${AWUS_DOMAIN_NAME}"; fi
+                if [ -n "${AWUS_DOMAIN_NAME:-}" ]; then rm -f "/etc/nginx/sites-enabled/${AWUS_DOMAIN_NAME}" "/etc/nginx/sites-available/${AWUS_DOMAIN_NAME}"; fi
                 if [ -f "/etc/nginx/conf.d/awus_dav_ext.conf" ]; then rm -f "/etc/nginx/conf.d/awus_dav_ext.conf"; fi
                 rm -f "$SCRIPT_SELF_PATH" "$CONFIG_FILE" "$ALIAS_FILE"
                 _info "AWUS 配置已移除。建议运行 'nginx -t && systemctl reload nginx'。"
@@ -302,14 +302,14 @@ do_uninstall() {
         2)
             read -r -p "$(echo -e ${RED}"警告：这将完全卸载 Nginx！数据目录不会被删除。(y/n): "${NC})" confirm
             if [[ "$confirm" =~ ^[Yy] ]]; then
-                if [ -n "$AWUS_DOMAIN_NAME" ]; then rm -f "/etc/nginx/sites-enabled/${AWUS_DOMAIN_NAME}" "/etc/nginx/sites-available/${AWUS_DOMAIN_NAME}"; fi
+                if [ -n "${AWUS_DOMAIN_NAME:-}" ]; then rm -f "/etc/nginx/sites-enabled/${AWUS_DOMAIN_NAME}" "/etc/nginx/sites-available/${AWUS_DOMAIN_NAME}"; fi
                 if [ -f "/etc/nginx/conf.d/awus_dav_ext.conf" ]; then rm -f "/etc/nginx/conf.d/awus_dav_ext.conf"; fi
                 rm -f "$SCRIPT_SELF_PATH" "$CONFIG_FILE" "$ALIAS_FILE"
-                _nginx_ctl "stop" && systemctl disable nginx &>/dev/null
+                _nginx_ctl "stop" && systemctl disable nginx &>/dev/null || true
                 _info "正在使用 'apt-get purge' 彻底卸载 Nginx...";
                 apt-get purge -y nginx-custom-webdav && apt-get autoremove -y
                 rm -rf /etc/nginx; _info "Nginx 已卸载。"
-                _warn "WebDAV 数据 (${AWUS_WEBDEV_DIR}) 和 SSL 证书 (${AWUS_DOMAIN_NAME}) 未被删除。"
+                _warn "WebDAV 数据 (${AWUS_WEBDEV_DIR:-}) 和 SSL 证书 (${AWUS_DOMAIN_NAME:-}) 未被删除。"
             fi;;
         0) _info "操作已取消." ;; *) _warn "无效选项。" ;;
     esac
@@ -354,10 +354,7 @@ ${GREEN}0.${NC} 退出脚本
 
 # --- Script Entry Point ---
 main() {
-    # This ensures the script is executed with root privileges from the start.
     check_root
-    
-    # Use flock to prevent concurrent execution of the script.
     (
         flock -n 200 || _error "另一个脚本实例正在运行。请等待其完成后再试。"
         
@@ -381,15 +378,15 @@ main() {
                 echo "  start|stop|restart 控制 Nginx 服务。"
                 echo "  accounts <subcommand> [username] 管理用户 (subcommands: view, add, passwd, delete)。"
                 exit 0 ;;
-            ""|menu) # No arguments or 'menu' command
-                if [ -f "$SCRIPT_SELF_PATH" ] && [ -f "$CONFIG_FILE" ]; then
+            ""|menu)
+                if [[ -f "$SCRIPT_SELF_PATH" && -f "$CONFIG_FILE" ]]; then
                     while true; do main_menu; done
                 else
                     _info "欢迎使用 AWUS (Nginx 定制版)!";
                     read -r -p "脚本似乎未安装。是否现在开始交互式安装? (y/n): " choice
                     if [[ "$choice" =~ ^[Yy] ]]; then do_install; else _info "安装已取消。"; fi
                 fi
-                exit 0 ;;
+                exit 0;;
             *) _error "无效命令: '$1'. 运行 './$(basename "$0") help' 查看用法。" ;;
         esac
     ) 200> "$LOCK_FILE"
