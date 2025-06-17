@@ -281,6 +281,18 @@ EOF_VHOST_FINAL
     chmod 600 "$CONFIG_FILE"; setup_script_invocation
 }
 
+EOF_VHOST_FINAL
+
+    _info "最终测试并重启 Nginx..."; nginx -t || _error "最终配置测试失败！"; _nginx_ctl "restart"
+    
+    trap - ERR EXIT
+    _info "${GREEN}--- Nginx WebDAV 安装和配置成功！ ---${NC}";
+    
+    mkdir -p "$SCRIPT_INSTALL_DIR"
+    { echo "AWUS_DOMAIN_NAME=\"${DOMAIN_NAME}\""; echo "AWUS_WEBDEV_DIR=\"${WEBDEV_DIR}\""; echo "AWUS_NGINX_PASSWD_FILE=\"${NGINX_PASSWD_FILE}\""; } > "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE"; setup_script_invocation
+}
+
 do_status() {
     load_config; _info "--- Nginx WebDAV 服务状态 ---"
     if ! dpkg -s nginx-custom-webdav &>/dev/null; then _warn "未安装定制版 Nginx。"; return; fi
