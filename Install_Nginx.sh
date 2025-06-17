@@ -3,7 +3,7 @@
 #================================================================================
 # Nginx WebDAV Ultimate Script (AWUS) - Custom Build Edition
 #
-# Version: 3.2.0 (Final Polished Release)
+# Version: 3.1.1 (Final Cleanup Release)
 # Author: wuyou0789 & AI Assistant
 # GitHub: https://github.com/wuyou0789/InstallationScript
 # License: MIT
@@ -16,11 +16,9 @@
 # --- Strict Mode & Environment ---
 set -euo pipefail
 IFS=$'\n\t'
-readonly SCRIPT_VERSION="3.2.1-nginx-final"
-readonly RED='\033[1;31m'
 
 # --- Global Constants ---
-readonly SCRIPT_VERSION="3.2.0-nginx-custom"
+readonly SCRIPT_VERSION="3.1.1-nginx-custom"
 readonly RED='\033[1;31m'
 readonly GREEN='\033[1;32m'
 readonly YELLOW='\033[1;33m'
@@ -34,15 +32,13 @@ readonly CONFIG_FILE="${SCRIPT_INSTALL_DIR}/config.conf"
 readonly DEFAULT_NGINX_PASSWD_FILE="/etc/nginx/webdav.passwd"
 readonly ALIAS_FILE="/etc/profile.d/awus-alias.sh"
 readonly LOCK_FILE="/var/tmp/awus.lock"
-readonly ALIAS_FILE="/etc/profile.d/awus-alias.sh"
 
 # --- Logging and Status Functions ---
 _info() { printf "${GREEN}[信息] %s${NC}\n" "$*"; }
-
-# --- Helper Functions ---
-_info() { printf "${GREEN}[信息] %s${NC}\n" "$*"; }
 _warn() { printf "${YELLOW}[警告] %s${NC}\n" "$*"; }
 _error() { printf "${RED}[错误] %s${NC}\n" "$*"; exit 1; }
+
+# --- Prerequisite and Utility Functions ---
 check_root() { [[ $EUID -ne 0 ]] && _error "此脚本必须以 root 权限运行。"; }
 _exists() { command -v "$1" >/dev/null 2>&1; }
 
@@ -72,7 +68,7 @@ _install_pkgs() {
 install_dependencies() {
     _info "正在检查并安装基础依赖...";
     local pkgs_to_install=""; local htpasswd_pkg="apache2-utils"
-    ! _exists "curl" && pkgs_to_install+="curl "
+    ! _exists "curl" && pkgs_to_install+="curl ";
     if ! apt-cache show "$htpasswd_pkg" &>/dev/null; then htpasswd_pkg="apache-utils"; fi
     ! _exists "htpasswd" && pkgs_to_install+="${htpasswd_pkg} "
     if [[ -n "$pkgs_to_install" ]]; then _install_pkgs $pkgs_to_install; fi
@@ -134,7 +130,7 @@ load_config() {
 setup_script_invocation() {
     _info "正在安装脚本以供后续使用..."; mkdir -p "$SCRIPT_INSTALL_DIR"; cp -f "$0" "$SCRIPT_SELF_PATH"; chmod +x "$SCRIPT_SELF_PATH"
     echo "alias webdav='sudo bash ${SCRIPT_SELF_PATH}'" > "$ALIAS_FILE"
-    _info "别名 'webdav' 已创建。请运行 'source ${ALIAS_FILE}' 或重新登录以使用。对于 Zsh 用户，可能需要将此别名手动添加到您的 .zshrc 文件中。"
+    _info "别名 'webdav' 已设置。请运行 'source ${ALIAS_FILE}' 或重新登录以使用。对于 Zsh 用户，可能需要将此别名手动添加到您的 .zshrc 文件中。"
 }
 
 do_install() {
@@ -190,7 +186,7 @@ EOF_VHOST
         _warn "检测到 ${DOMAIN_NAME} 的证书已存在。"; read -r -p "您希望如何处理? [1] 使用现有证书 [2] 强制续订 [0] 中止: " cert_choice
         case "$cert_choice" in
             1) _info "将使用现有证书。";;
-            2) _info "正在强制续订证书..."; certbot --nginx --force-renewal -d "${DOMAIN_NAME}" --non-interactive --agree-tos || _error "证书续订失败。";;
+            2) _info "正在强制续订证书..."; certbot certonly --nginx --force-renewal -d "${DOMAIN_NAME}" --non-interactive --agree-tos || _error "证书续订失败。";;
             *) _error "操作中止。";;
         esac
     else
@@ -256,7 +252,7 @@ do_status() {
         _info "  WebDAV 服务器目录: ${AWUS_WEBDEV_DIR}"
         _info "  WebDAV 密码文件: ${AWUS_NGINX_PASSWD_FILE}"
         if [ -d "/etc/letsencrypt/live/${AWUS_DOMAIN_NAME}" ]; then
-            local expiry_date=$(openssl x509 -enddate -noout -in "/etc/letsencrypt/live/${AWUS_DOMAIN_NAME}/fullchain.pem" | cut -d= -f2)
+            local expiry_date; expiry_date=$(openssl x509 -enddate -noout -in "/etc/letsencrypt/live/${AWUS_DOMAIN_NAME}/fullchain.pem" | cut -d= -f2)
             _info "  SSL 证书到期日: ${expiry_date}"
         fi
     fi
@@ -274,7 +270,7 @@ do_accounts_manage() {
             if ! [[ "$username" =~ ^[a-zA-Z0-9._-]+$ ]]; then _error "用户名包含无效字符。"; fi
             if grep -q "^${username}:" "${passwd_file}" &>/dev/null; then _error "用户 ${username} 已存在！"; fi
             local new_pass; while true; do read -r -s -p "为 ${username} 设置密码: " new_pass; echo; read -r -s -p "确认密码: " confirm_pass; echo; if [[ "$new_pass" == "$confirm_pass" && -n "$new_pass" ]]; then break; else _warn "密码为空或不匹配。"; fi; done
-            local htpasswd_opts="-b"; if ! [ -s "$passwd_file" ]; then htpasswd_opts="-cb"; fi
+            local htpasswd_opts="-b"; if ! [ -s "$passwd_file" ]; then _info "密码文件不存在或为空，将使用 -c 参数创建。"; htpasswd_opts="-cb"; fi
             if htpasswd ${htpasswd_opts} "${passwd_file}" "${username}" "${new_pass}"; then _info "用户 ${username} 已添加，拥有完全访问权限。"; else _error "添加用户 ${username} 失败。"; fi;;
         passwd)
             if [[ -z "$username" ]]; then read -r -p "请输入要修改密码的用户名: " username; fi; if [[ -z "$username" ]]; then _error "用户名不能为空。"; fi
@@ -338,7 +334,7 @@ ${GREEN}12.${NC} 修改密码      ${GREEN}13.${NC} 删除用户
 ${BLUE}------------------------------------------------------${NC}
 ${GREEN}0.${NC} 退出脚本
 "
-    read -rp "请输入选项: " option
+    read -r -p "请输入选项: " option
     case "$option" in
         0) exit 0 ;;
         1) read -r -p "$(echo -e ${YELLOW}"此操作将引导您完成新的安装或重新配置。(y/n): "${NC})" confirm; if [[ "$confirm" =~ ^[Yy] ]]; then do_install; else _info "操作已取消。"; fi;;
@@ -356,56 +352,47 @@ ${GREEN}0.${NC} 退出脚本
     if [[ "$option" != "0" ]]; then echo && read -n 1 -s -r -p "按任意键返回主菜单..."; fi
 }
 
-# --- Script Entry Point (NEW SIMPLIFIED LOGIC) ---
+# --- Script Entry Point ---
 main() {
+    # This ensures the script is executed with root privileges from the start.
     check_root
-    _os_check
-
-    # If the first argument is 'install', run it directly without questions.
-    if [[ "${1:-}" == "install" ]]; then
-        _warn "检测到 'install' 命令，将开始全自动安装..."
-        do_install
-        exit 0
-    fi
-
-    # Handle other direct commands
-    case "${1:-}" in
-        status|uninstall)
-            if [ ! -f "$CONFIG_FILE" ]; then _error "AWUS 未安装。请先运行 'install' 命令。"; fi
-            "do_$1"
-            exit 0
-            ;;
-        start|stop|restart)
-            if [ ! -f "$CONFIG_FILE" ]; then _error "AWUS 未安装。"; fi
-            "_nginx_ctl" "$1"
-            exit 0
-            ;;
-        accounts)
-            if [ ! -f "$CONFIG_FILE" ]; then _error "AWUS 未安装。"; fi
-            shift; do_accounts_manage "$@"
-            exit 0
-            ;;
-        help|-h|--help)
-            # ... (帮助信息) ...
-            exit 0
-            ;;
-    esac
-
-    # If no arguments are given, proceed with interactive logic.
-    if [ -f "$SCRIPT_SELF_PATH" ] && [ -f "$CONFIG_FILE" ]; then
-        # If installed, show menu
-        while true; do main_menu; done
-    else
-        # If not installed, prompt to install
-        _info "欢迎使用 AWUS (Nginx 定制版)!"
-        read -r -p "脚本似乎未安装。是否现在开始交互式安装? (y/n): " first_run_choice
-        if [[ "$first_run_choice" =~ ^[Yy] ]]; then
-            do_install
-        else
-            _info "安装已取消。"
-        fi
-    fi
+    
+    # Use flock to prevent concurrent execution of the script.
+    (
+        flock -n 200 || _error "另一个脚本实例正在运行。请等待其完成后再试。"
+        
+        _os_check
+        case "${1:-}" in
+            install)
+                read -r -p "$(echo -e ${YELLOW}"您正在尝试执行安装/重新配置。\n如果已存在 AWUS 配置，相关文件可能会被覆盖。\n确定要继续吗? (y/n): "${NC})" confirm
+                if [[ "$confirm" =~ ^[Yy] ]]; then do_install; else _info "操作已取消。"; fi
+                exit 0 ;;
+            status|uninstall) "do_$1"; exit 0 ;;
+            start|stop|restart) "_nginx_ctl" "$1"; exit 0 ;;
+            accounts) shift; do_accounts_manage "$@"; exit 0 ;;
+            help|-h|--help)
+                echo "Nginx WebDAV Ultimate Script (AWUS) v${SCRIPT_VERSION}"
+                echo "用法: $(basename "$0") [命令] [参数]"
+                echo "无参数运行将进入交互式菜单或安装向导。"; echo
+                echo "主要命令:";
+                echo "  install          交互式安装或重新配置 WebDAV 服务。"
+                echo "  uninstall        卸载 AWUS 配置或 Nginx 服务。"
+                echo "  status           显示服务状态和配置信息。"
+                echo "  start|stop|restart 控制 Nginx 服务。"
+                echo "  accounts <subcommand> [username] 管理用户 (subcommands: view, add, passwd, delete)。"
+                exit 0 ;;
+            ""|menu) # No arguments or 'menu' command
+                if [ -f "$SCRIPT_SELF_PATH" ] && [ -f "$CONFIG_FILE" ]; then
+                    while true; do main_menu; done
+                else
+                    _info "欢迎使用 AWUS (Nginx 定制版)!";
+                    read -r -p "脚本似乎未安装。是否现在开始交互式安装? (y/n): " choice
+                    if [[ "$choice" =~ ^[Yy] ]]; then do_install; else _info "安装已取消。"; fi
+                fi
+                exit 0 ;;
+            *) _error "无效命令: '$1'. 运行 './$(basename "$0") help' 查看用法。" ;;
+        esac
+    ) 200> "$LOCK_FILE"
 }
 
-# Always call main to start the script.
 main "$@"
