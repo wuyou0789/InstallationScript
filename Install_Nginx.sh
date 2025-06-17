@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 
 #================================================================================
-# Nginx WebDAV Ultimate Script (AWUS) - Root-Powered Edition
+# Nginx WebDAV Ultimate Script (AWUS) - Final Production Release
 #
-# Version: 4.1.0
+# Version: 4.2.0
 # Author: wuyou0789 & AI Assistant
 # GitHub: https://github.com/wuyou0789/InstallationScript
 # License: MIT
@@ -17,7 +17,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 # --- Global Constants ---
-readonly SCRIPT_VERSION="4.1.0-nginx-root"
+readonly SCRIPT_VERSION="4.2.0-nginx-final"
 readonly RED='\033[1;31m'
 readonly GREEN='\033[1;32m'
 readonly YELLOW='\033[1;33m'
@@ -38,8 +38,15 @@ _warn() { printf "${YELLOW}[警告] %s${NC}\n" "$*"; }
 _error() { printf "${RED}[错误] %s${NC}\n" "$*"; exit 1; }
 
 # --- Prerequisite and Utility Functions ---
-check_root() { [[ $EUID -ne 0 ]] && _error "此脚本必须以 root 权限运行。请使用 'sudo ./awus.sh'。"; }
-_exists() { command -v "$1" >/dev/null 2>&1; }
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        _error "此脚本必须以 root 权限运行。请使用 'sudo ./awus.sh'。"
+    fi
+}
+
+_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
 
 _os_check() {
     if ! _exists "lsb_release"; then
@@ -79,8 +86,8 @@ load_config() {
 
 setup_script_invocation() {
     _info "正在安装脚本以供后续使用..."; mkdir -p "$SCRIPT_INSTALL_DIR"; cp -f "$0" "$SCRIPT_SELF_PATH"; chmod +x "$SCRIPT_SELF_PATH"
-    echo "alias webdav='bash ${SCRIPT_SELF_PATH}'" > "$ALIAS_FILE"
-    _info "别名 'webdav' 已创建。请运行 'source ${ALIAS_FILE}' 或重新登录以使用。对于 Zsh 用户，可能需要将此别名手动添加到您的 .zshrc 文件中。"
+    echo "alias webdav='sudo bash ${SCRIPT_SELF_PATH}'" > "$ALIAS_FILE"
+    _info "别名 'webdav' 已设置。请运行 'source ${ALIAS_FILE}' 或重新登录以使用。对于 Zsh 用户，可能需要将此别名手动添加到您的 .zshrc 文件中。"
 }
 
 # --- Core Logic Functions ---
@@ -120,8 +127,8 @@ install_custom_nginx() {
     if ! curl -L --fail -o "${deb_path}" "${deb_url}"; then
         _error "下载定制 Nginx 包失败！请检查您在脚本中配置的 URL。"
     fi
-    _info "正在卸载任何可能冲突的官方 Nginx..."; systemctl stop nginx &>/dev/null
-    apt-get purge -y nginx nginx-common &>/dev/null
+    _info "正在卸载任何可能冲突的官方 Nginx..."; systemctl stop nginx &>/dev/null || true
+    apt-get purge -y nginx nginx-common &>/dev/null || true
     _info "正在安装定制的 Nginx 包...";
     if ! dpkg -i "${deb_path}"; then
         _warn "dpkg 安装失败，正在尝试自动修复依赖 (-f)..."
@@ -131,11 +138,11 @@ install_custom_nginx() {
 }
 
 do_install() {
-    local DOMAIN_NAME WEBDEV_DIR NGINX_PASSWD_FILE ADMIN_USER
+    local DOMAIN_NAME WEBDEV_DIR NGINX_PASSWD_FILE ADMIN_USER ADMIN_PASS
+    
     trap 'install_cleanup' ERR
-
     install_cleanup() {
-        _warn "\n--- 安装过程中发生错误，正在执行自动清理... ---"; _nginx_ctl "stop" &>/dev/null
+        _warn "\n--- 安装过程中发生错误，正在执行自动清理... ---"; _nginx_ctl "stop" &>/dev/null || true
         if [ -n "${DOMAIN_NAME:-}" ]; then
             _warn "移除为 ${DOMAIN_NAME} 创建的 Nginx 配置..."; rm -f "/etc/nginx/sites-enabled/${DOMAIN_NAME}" "/etc/nginx/sites-available/${DOMAIN_NAME}"
             if _exists "certbot" && [ -d "/etc/letsencrypt/live/${DOMAIN_NAME}" ]; then _warn "删除为 ${DOMAIN_NAME} 创建的 SSL 证书..."; certbot delete --cert-name "$DOMAIN_NAME" --non-interactive; fi
@@ -158,7 +165,7 @@ do_install() {
     
     while true; do read -r -p "请输入管理员用户名: " ADMIN_USER; if [[ "$ADMIN_USER" =~ ^[a-zA-Z0-9._-]+$ ]]; then break; else _warn "用户名包含无效字符。"; fi; done
     
-    local ADMIN_PASS; while true; do read -r -s -p "为 ${ADMIN_USER} 设置密码: " ADMIN_PASS; echo; read -r -s -p "确认密码: " confirm_pass; echo; if [[ "$ADMIN_PASS" == "$confirm_pass" && -n "$ADMIN_PASS" ]]; then break; else _warn "密码为空或不匹配。"; fi; done
+    while true; do read -r -s -p "为 ${ADMIN_USER} 设置密码: " ADMIN_PASS; echo; read -r -s -p "确认密码: " confirm_pass; echo; if [[ "$ADMIN_PASS" == "$confirm_pass" && -n "$ADMIN_PASS" ]]; then break; else _warn "密码为空或不匹配。"; fi; done
 
     _info "正在准备 Nginx 配置文件...";
     if ! grep -q 'dav_ext_lock_zone' /etc/nginx/nginx.conf; then sed -i '/^[[:space:]]*http[[:space:]]*{/a \    dav_ext_lock_zone zone=webdav:10m;' /etc/nginx/nginx.conf; fi
@@ -292,7 +299,7 @@ do_uninstall() {
             read -r -p "$(echo -e ${YELLOW}"确定要移除 AWUS 脚本和 Nginx 站点配置吗? (y/n): "${NC})" confirm
             if [[ "$confirm" =~ ^[Yy] ]]; then
                 if [ -n "${AWUS_DOMAIN_NAME:-}" ]; then rm -f "/etc/nginx/sites-enabled/${AWUS_DOMAIN_NAME}" "/etc/nginx/sites-available/${AWUS_DOMAIN_NAME}"; fi
-                if [ -f "/etc/nginx/conf.d/awus_dav_ext.conf" ]; then rm -f "/etc/nginx/conf.d/awus_dav_ext.conf"; fi
+                if [ -f "/etc/nginx/conf.d/awus_dav_ext.conf" ]; then rm -f "/etc/nginx/conf.d/awus_dav_ext.conf"; fi # Just in case
                 rm -f "$SCRIPT_SELF_PATH" "$CONFIG_FILE" "$ALIAS_FILE"
                 _info "AWUS 配置已移除。建议运行 'nginx -t && systemctl reload nginx'。"
             fi;;
@@ -351,32 +358,46 @@ ${GREEN}0.${NC} 退出脚本
 
 # --- Script Entry Point ---
 main() {
-    check_root
+    # Use flock to prevent concurrent execution of the script.
     (
         flock -n 200 || _error "另一个脚本实例正在运行。请等待其完成后再试。"
         
-        _os_check
+        # All commands from here are run with root privileges.
+        check_root
+        
         case "${1:-}" in
             install)
-                read -r -p "$(echo -e ${YELLOW}"您正在尝试执行安装/重新配置。\n如果已存在 AWUS 配置，相关文件可能会被覆盖。\n确定要继续吗? (y/n): "${NC})" confirm
-                if [[ "$confirm" =~ ^[Yy] ]]; then do_install; else _info "操作已取消。"; fi
-                exit 0 ;;
-            status|uninstall) "do_$1"; exit 0 ;;
-            start|stop|restart) "_nginx_ctl" "$1"; exit 0 ;;
-            accounts) shift; do_accounts_manage "$@"; exit 0 ;;
+                do_install
+                exit 0
+                ;;
+            status|uninstall)
+                do_$1
+                exit 0
+                ;;
+            start|stop|restart)
+                _nginx_ctl "$1"
+                exit 0
+                ;;
+            accounts)
+                shift
+                do_accounts_manage "$@"
+                exit 0
+                ;;
             help|-h|--help)
                 echo "Nginx WebDAV Ultimate Script (AWUS) v${SCRIPT_VERSION}"
-                echo "用法: $(basename "$0") [命令] [参数]"
-                echo "无参数运行将进入交互式菜单或安装向导。"; echo
-                echo "主要命令:";
+                echo "用法: sudo $(basename "$0") [命令] [参数]"
+                echo "无参数运行将进入交互式菜单。"
+                echo
+                echo "主要命令:"
                 echo "  install          交互式安装或重新配置 WebDAV 服务。"
                 echo "  uninstall        卸载 AWUS 配置或 Nginx 服务。"
                 echo "  status           显示服务状态和配置信息。"
                 echo "  start|stop|restart 控制 Nginx 服务。"
-                echo "  accounts <subcommand> [username] 管理用户 (subcommands: view, add, passwd, delete)。"
-                exit 0 ;;
+                echo "  accounts <subcommand> [username] 管理用户。"
+                exit 0
+                ;;
             ""|menu)
-                if [[ -f "$SCRIPT_SELF_PATH" && -f "$CONFIG_FILE" ]]; then
+                if [[ -f "$CONFIG_FILE" ]]; then
                     while true; do main_menu; done
                 else
                     _info "欢迎使用 AWUS (Nginx 定制版)!";
@@ -384,7 +405,9 @@ main() {
                     if [[ "$choice" =~ ^[Yy] ]]; then do_install; else _info "安装已取消。"; fi
                 fi
                 exit 0;;
-            *) _error "无效命令: '$1'. 运行 './$(basename "$0") help' 查看用法。" ;;
+            *)
+                _error "无效命令: '$1'. 运行 'sudo $(basename "$0") help' 查看用法。"
+                ;;
         esac
     ) 200> "$LOCK_FILE"
 }
