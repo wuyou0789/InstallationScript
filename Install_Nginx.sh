@@ -159,7 +159,9 @@ EOF_SYSTEMD
 }
 
 do_install() {
-    local DOMAIN_NAME WEBDEV_DIR NGINX_PASSWD_FILE ADMIN_USER
+    local DOMAIN_NAME WEBDEV_DIR NGINX_PASSWD_FILE ADMIN_USER ADMIN_PASS
+    local nginx_vhost_path temp_nginx_vhost_path # Declare all local variables at the top
+    
     trap 'install_cleanup' ERR
 
     install_cleanup() {
@@ -168,17 +170,20 @@ do_install() {
         if [ -n "${DOMAIN_NAME:-}" ]; then
             _warn "移除为 ${DOMAIN_NAME} 创建的 Nginx 配置...";
             rm -f "/etc/nginx/sites-enabled/${DOMAIN_NAME}" "/etc/nginx/sites-available/${DOMAIN_NAME}"
-            if _exists "certbot" && [ -d "/etc/letsencrypt/live/${DOMAIN_NAME}" ]; then
+            # Also remove the temporary certbot config if it exists under a different name
+            [ -n "${temp_nginx_vhost_path:-}" ] && rm -f "/etc/nginx/sites-enabled/$(basename "$temp_nginx_vhost_path")" "/etc/nginx/sites-available/$(basename "$temp_nginx_vhost_path")"
+
+            if _exists "${CERTBOT_CMD}" && [ -d "/etc/letsencrypt/live/${DOMAIN_NAME}" ]; then
                 _warn "删除为 ${DOMAIN_NAME} 创建的 SSL 证书...";
-                certbot delete --cert-name "$DOMAIN_NAME" --non-interactive
+                "${CERTBOT_CMD}" delete --cert-name "$DOMAIN_NAME" --non-interactive
             fi
         fi
         _info "--- 清理完成 ---"
     }
     
     _os_check
-    install_dependencies
-    install_custom_nginx
+    install_dependencies # Assumes this function also runs commands without internal sudo
+    install_custom_nginx # Same assumption
 
     _info "--- Nginx WebDAV 配置向导 ---"
     while true; do read -r -p "请输入您的域名 (例如: dav.example.com): " DOMAIN_NAME; if [[ "$DOMAIN_NAME" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then break; else _warn "域名格式无效。"; fi; done
@@ -200,22 +205,26 @@ do_install() {
         sed -i '/^[[:space:]]*http[[:space:]]*{/a \    dav_ext_lock_zone zone=webdav:10m;' /etc/nginx/nginx.conf
     fi
     
-    # Create a minimal Nginx config specifically for Certbot's initial challenge
-    local nginx_vhost_path_temp_for_certbot="/etc/nginx/sites-available/${DOMAIN_NAME}.certbot.conf"
-    cat <<EOF_VHOST_CERTBOT | tee "${nginx_vhost_path_temp_for_certbot}" > /dev/null
+    # This will be the name of our final config file
+    nginx_vhost_path="/etc/nginx/sites-available/${DOMAIN_NAME}"
+    # Create a temporary, minimal Nginx config for Certbot's initial challenge.
+    # Using a distinct name for the temporary file to avoid confusion if script fails.
+    temp_nginx_vhost_path="/etc/nginx/sites-available/${DOMAIN_NAME}.certbot-setup.conf"
+
+    cat <<EOF_VHOST_TEMP | tee "${temp_nginx_vhost_path}" > /dev/null
 server {
     listen 80;
     server_name ${DOMAIN_NAME};
-    root /var/www/html; # Certbot will place challenge files here
+    root /var/www/html; # Standard webroot for Certbot challenges
     location /.well-known/acme-challenge/ {
         allow all;
     }
     # For any other request to this temporary config, return 404
     location / {
-        return 404;
+        return 404; 
     }
 }
-EOF_VHOST_CERTBOT
+EOF_VHOST_TEMP
 
     _info "正在执行系统配置...";
     mkdir -p "${WEBDEV_DIR}" && chown www-data:www-data "${WEBDEV_DIR}" && chmod 775 "${WEBDEV_DIR}"
@@ -223,38 +232,54 @@ EOF_VHOST_CERTBOT
     htpasswd -cb "${NGINX_PASSWD_FILE}" "${ADMIN_USER}" "${ADMIN_PASS}" || _error "创建管理员用户失败。"
 
     _info "正在启用临时站点并重启 Nginx (为 Certbot 做准备)...";
-    _warn "脚本将临时禁用 Nginx 默认站点..."; read -r -p "按 Enter 继续...";
-    # Ensure default is disabled, and our temporary certbot config is enabled
+    _warn "脚本将临时禁用 Nginx 默认站点 (如果存在)..."; read -r -p "按 Enter 继续...";
+    # Disable default and any old site config for our domain, then enable temp config
     rm -f /etc/nginx/sites-enabled/default || true
-    rm -f "/etc/nginx/sites-enabled/${DOMAIN_NAME}" || true # Remove any old symlink of our main config
-    ln -sf "$nginx_vhost_path_temp_for_certbot" "/etc/nginx/sites-enabled/"
+    rm -f "/etc/nginx/sites-enabled/$(basename "${nginx_vhost_path}")" || true 
+    ln -sf "$temp_nginx_vhost_path" "/etc/nginx/sites-enabled/"
     
-    nginx -t || _error "Nginx 临时配置测试失败。"; 
+    nginx -t || _error "Nginx 临时配置测试失败。"
     _nginx_ctl "restart" || _error "Nginx 初始重启失败。"
     
-    # --- SSL Certificate Acquisition ---
-    local cert_email email_option cert_command_base="${CERTBOT_CMD} certonly --non-interactive --agree-tos --nginx -d ${DOMAIN_NAME}"
-    read -r -p "请输入用于 Let's Encrypt 的邮箱 (推荐): " cert_email
-    email_option=$([[ -n "$cert_email" ]] && echo "--email ${cert_email}" || echo "--register-unsafely-without-email")
-    if [[ -z "$cert_email" ]]; then _warn "未提供邮箱！"; fi
+    # --- SSL Certificate Acquisition (Corrected Command Execution using Array) ---
+    _info "正在处理 SSL 证书...";
+    local cert_email
+    read -r -p "请输入用于 Let's Encrypt 的邮箱 (用于续期提醒，强烈推荐): " cert_email
+    
+    # Base Certbot command array
+    local certbot_cmd_array=("${CERTBOT_CMD}" "certonly" "--non-interactive" "--agree-tos" "--nginx" "-d" "${DOMAIN_NAME}")
+
+    if [[ -n "$cert_email" ]]; then
+        certbot_cmd_array+=("--email" "${cert_email}")
+    else
+        _warn "未提供邮箱，您将不会收到证书到期提醒！"
+        certbot_cmd_array+=("--register-unsafely-without-email")
+    fi
 
     if [ -d "/etc/letsencrypt/live/${DOMAIN_NAME}" ]; then
         _warn "检测到 ${DOMAIN_NAME} 的证书已存在。";
-        read -r -p "[1] 使用现有证书并尝试更新 [2] 强制重新申请新证书 [0] 中止: " cert_choice
+        read -r -p "您希望如何处理? [1] 使用现有证书并尝试更新 [2] 强制重新申请新证书 [0] 中止: " cert_choice
         case "$cert_choice" in
-            1) _info "将尝试更新现有证书..."; ${cert_command_base} ${email_option} --keep-until-expiring || _error "Certbot (更新现有) 失败。";;
-            2) _info "正在强制重新申请新证书..."; ${cert_command_base} ${email_option} --force-renewal || _error "Certbot (强制重新申请) 失败。";;
+            1) 
+                _info "将尝试更新现有证书 (如果接近到期)...";
+                local cert_update_cmd_array=("${certbot_cmd_array[@]}" "--keep-until-expiring")
+                "${cert_update_cmd_array[@]}" || _error "Certbot (更新现有) 失败。"
+                ;;
+            2) 
+                _info "正在强制重新申请新证书...";
+                local cert_force_renew_cmd_array=("${certbot_cmd_array[@]}" "--force-renewal")
+                "${cert_force_renew_cmd_array[@]}" || _error "Certbot (强制重新申请) 失败。"
+                ;;
             *) _error "操作中止。";;
         esac
     else
         _info "正在申请新的 SSL 证书...";
-        ${cert_command_base} ${email_option} || _error "Certbot (首次申请) 失败。"
+        "${certbot_cmd_array[@]}" || _error "Certbot (首次申请) 失败。"
     fi
     
-    # --- Final Nginx Configuration with WebDAV and SSL ---
-    _info "SSL 证书已处理。正在生成最终的 Nginx 配置文件..."
-    local nginx_vhost_final_path="/etc/nginx/sites-available/${DOMAIN_NAME}" # This will be our final config file
-    cat <<EOF_VHOST_FINAL | tee "${nginx_vhost_final_path}" > /dev/null
+    _info "SSL 证书已获取/确认。正在生成最终的 Nginx 配置文件..."
+    # Now, write the final, complete Nginx configuration including SSL directives using the final path
+    cat <<EOF_VHOST_FINAL | tee "${nginx_vhost_path}" > /dev/null
 server {
     listen 80; listen [::]:80; server_name ${DOMAIN_NAME};
     location /.well-known/acme-challenge/ { root /var/www/html; }
@@ -289,18 +314,19 @@ server {
 EOF_VHOST_FINAL
 
     _info "正在启用最终站点配置并移除临时 Certbot 配置..."
-    # Remove the temporary certbot config symlink if it was created under a different name
-    rm -f "/etc/nginx/sites-enabled/$(basename "$nginx_vhost_path_temp_for_certbot")" || true
-    # Ensure our final config is the one enabled
-    ln -sf "$nginx_vhost_final_path" "/etc/nginx/sites-enabled/"
-
+    rm -f "/etc/nginx/sites-enabled/$(basename "$temp_nginx_vhost_path")" || true # Remove temp symlink
+    rm -f "$temp_nginx_vhost_path" || true # Remove temp config file
+    ln -sf "$nginx_vhost_path" "/etc/nginx/sites-enabled/" # Enable final config
 
     _info "最终测试并重启 Nginx...";
     nginx -t || _error "最终配置测试失败！"
     _nginx_ctl "restart" || _error "Nginx 最终重启失败。"
     
+    # --- All steps successfully completed, remove the error trap ---
     trap - ERR EXIT
+    
     _info "${GREEN}--- Nginx WebDAV 安装和配置成功！ ---${NC}";
+    _info "服务应该可以通过 https://${DOMAIN_NAME} 访问。"
     
     mkdir -p "$SCRIPT_INSTALL_DIR"
     {
