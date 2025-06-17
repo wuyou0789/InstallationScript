@@ -3,7 +3,7 @@
 #================================================================================
 # Nginx WebDAV Ultimate Script (AWUS) - Final Production Release
 #
-# Version: 4.2.1
+# Version: 4.2.2
 # Author: wuyou0789 & AI Assistant
 # GitHub: https://github.com/wuyou0789/InstallationScript
 # License: MIT
@@ -17,7 +17,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 # --- Global Constants ---
-readonly SCRIPT_VERSION="4.2.1-nginx-final"
+readonly SCRIPT_VERSION="4.2.2-nginx-final"
 readonly RED='\033[1;31m'
 readonly GREEN='\033[1;32m'
 readonly YELLOW='\033[1;33m'
@@ -79,10 +79,41 @@ setup_script_invocation() {
     _info "别名 'webdav' 已创建。请运行 'source ${ALIAS_FILE}' 或重新登录以使用。"
 }
 
+setup_systemd_service() {
+    _info "正在为定制版 Nginx 创建 systemd 服务文件..."
+    local service_file_path="/etc/systemd/system/nginx.service"
+    
+    cat <<EOF_SYSTEMD | tee "${service_file_path}" > /dev/null
+[Unit]
+Description=A high performance web server and a reverse proxy server
+Documentation=man:nginx(8)
+After=network.target
+
+[Service]
+Type=forking
+PIDFile=/var/run/nginx.pid
+ExecStartPre=/usr/sbin/nginx -t -q -g 'daemon on; master_process on;'
+ExecStart=/usr/sbin/nginx -g 'daemon on; master_process on;'
+ExecReload=/usr/sbin/nginx -s reload
+ExecStop=-/sbin/start-stop-daemon --quiet --stop --retry QUIT/5 --pidfile /var/run/nginx.pid
+TimeoutStopSec=5
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
+EOF_SYSTEMD
+
+    _info "正在重载 systemd 守护进程并启用 Nginx 服务..."
+    systemctl daemon-reload
+    systemctl enable nginx
+}
+
+
 install_dependencies() {
     _info "正在检查并安装基础依赖...";
     local pkgs_to_install=""; ! _exists "curl" && pkgs_to_install+="curl "; ! _exists "htpasswd" && pkgs_to_install+="apache2-utils ";
     if [[ -n "$pkgs_to_install" ]]; then _install_pkgs $pkgs_to_install; fi
+
     _info "正在检查并安装 Certbot...";
     if ! _exists "certbot" || ! [[ $(readlink -f "$(which certbot)" 2>/dev/null) == *"/snap/"* ]]; then
         if ! _exists "certbot"; then _info "未找到 Certbot。将使用 Snap 进行安装..."; else _warn "检测到不推荐的 Certbot 版本。将自动替换为 Snap 版本..."; fi
@@ -97,20 +128,36 @@ install_dependencies() {
 
 install_custom_nginx() {
     _info "正在安装定制版 Nginx...";
-    if dpkg -s nginx-custom-webdav &>/dev/null; then _info "检测到已安装的定制版 Nginx，跳过安装。"; return; fi
+    if dpkg -s nginx-custom-webdav &>/dev/null; then
+        _info "检测到已安装的定制版 Nginx，跳过安装。"
+        # Even if installed, ensure the systemd service is set up.
+        if [ ! -f "/etc/systemd/system/nginx.service" ]; then
+            setup_systemd_service
+        fi
+        return
+    fi
+    
     local deb_url="https://github.com/wuyou0789/InstallationScript/releases/download/nginx-custom-webdav/nginx-custom-webdav_1.28.0-1_amd64.deb"
     local deb_path="/tmp/nginx-custom-webdav.deb"; _info "正在从 GitHub 下载定制的 Nginx 包...";
     if ! curl -L --fail -o "${deb_path}" "${deb_url}"; then _error "下载定制 Nginx 包失败！请检查脚本中的 URL。"; fi
-    _info "正在卸载任何冲突的官方 Nginx..."; systemctl stop nginx &>/dev/null || true
+    
+    _info "正在卸载任何可能冲突的官方 Nginx..."; systemctl stop nginx &>/dev/null || true
     apt-get purge -y nginx nginx-common &>/dev/null || true
+    
     _info "正在安装定制的 Nginx 包...";
-    if ! dpkg -i "${deb_path}"; then _warn "dpkg 安装失败，正在尝试自动修复依赖 (-f)..."; apt-get install -f -y || _error "自动修复依赖失败！"; fi
+    if ! dpkg -i "${deb_path}"; then
+        _warn "dpkg 安装失败，正在尝试自动修复依赖 (-f)..."; apt-get install -f -y || _error "自动修复依赖失败！";
+    fi
     rm -f "${deb_path}"; _info "定制版 Nginx 安装成功！"
+    
+    # After installing the custom package, set up the systemd service.
+    setup_systemd_service
 }
 
 do_install() {
     local DOMAIN_NAME WEBDEV_DIR NGINX_PASSWD_FILE ADMIN_USER
     trap 'install_cleanup' ERR
+
     install_cleanup() {
         _warn "\n--- 安装过程中发生错误，正在执行自动清理... ---"; _nginx_ctl "stop" &>/dev/null || true
         if [ -n "${DOMAIN_NAME:-}" ]; then
@@ -124,16 +171,19 @@ do_install() {
 
     _info "--- Nginx WebDAV 配置向导 ---"
     while true; do read -r -p "请输入您的域名 (例如: dav.example.com): " DOMAIN_NAME; if [[ "$DOMAIN_NAME" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then break; else _warn "域名格式无效。"; fi; done
+    
     local default_dir="/var/www/webdav/${DOMAIN_NAME}"; read -r -p "请输入 WebDAV 数据目录 [${default_dir}]: " WEBDEV_DIR; WEBDEV_DIR=${WEBDEV_DIR:-$default_dir}
     if [[ ! "$WEBDEV_DIR" =~ ^/ ]]; then _error "路径必须是绝对路径。"; fi
     WEBDEV_DIR=$(realpath -m "$WEBDEV_DIR")
+    
     local default_passwd_file="$DEFAULT_NGINX_PASSWD_FILE"; read -r -p "请输入 WebDAV 密码文件路径 [${default_passwd_file}]: " NGINX_PASSWD_FILE; NGINX_PASSWD_FILE=${NGINX_PASSWD_FILE:-$default_passwd_file}
+    
     while true; do read -r -p "请输入管理员用户名: " ADMIN_USER; if [[ "$ADMIN_USER" =~ ^[a-zA-Z0-9._-]+$ ]]; then break; else _warn "用户名包含无效字符。"; fi; done
+    
     local ADMIN_PASS; while true; do read -r -s -p "为 ${ADMIN_USER} 设置密码: " ADMIN_PASS; echo; read -r -s -p "确认密码: " confirm_pass; echo; if [[ "$ADMIN_PASS" == "$confirm_pass" && -n "$ADMIN_PASS" ]]; then break; else _warn "密码为空或不匹配。"; fi; done
 
     _info "正在准备 Nginx 配置文件...";
-    # --- **FIX: Ensure Nginx directory structure exists** ---
-    mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/nginx/conf.d
+    mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/nginx/conf.d /var/log/nginx /var/cache/nginx/client_temp
     
     if ! grep -q 'dav_ext_lock_zone' /etc/nginx/nginx.conf; then sed -i '/^[[:space:]]*http[[:space:]]*{/a \    dav_ext_lock_zone zone=webdav:10m;' /etc/nginx/nginx.conf; fi
     
@@ -146,10 +196,6 @@ EOF_VHOST
     mkdir -p "${WEBDEV_DIR}" && chown www-data:www-data "${WEBDEV_DIR}" && chmod 775 "${WEBDEV_DIR}"
     touch "${NGINX_PASSWD_FILE}" && chown root:www-data "${NGINX_PASSWD_FILE}" && chmod 640 "${NGINX_PASSWD_FILE}"
     htpasswd -cb "${NGINX_PASSWD_FILE}" "${ADMIN_USER}" "${ADMIN_PASS}" || _error "创建管理员用户失败。"
-    # --- **FIX: Manually create necessary directories for our custom Nginx build** ---
-    _info "正在为定制版 Nginx 创建必要的日志和缓存目录..."
-    mkdir -p /var/log/nginx
-    mkdir -p /var/cache/nginx/client_temp
 
     _info "正在启用新站点并重启 Nginx...";
     _warn "脚本将禁用 Nginx 默认站点..."; read -r -p "按 Enter 继续...";
@@ -160,12 +206,12 @@ EOF_VHOST
         _warn "检测到 ${DOMAIN_NAME} 的证书已存在。"; read -r -p "[1] 使用现有证书 [2] 强制续订 [0] 中止: " cert_choice
         case "$cert_choice" in
             1) _info "将使用现有证书。";;
-            2) _info "正在强制续订证书..."; certbot --nginx --force-renewal -d "${DOMAIN_NAME}" --non-interactive --agree-tos || _error "证书续订失败。";;
+            2) _info "正在强制续订证书..."; certbot certonly --nginx --force-renewal -d "${DOMAIN_NAME}" --non-interactive --agree-tos || _error "证书续订失败。";;
             *) _error "操作中止。";;
         esac
     else
         _info "正在申请新的 SSL 证书...";
-        read -r -p "请输入用于 Let's Encrypt 的邮箱 (推荐): " cert_email
+        read -r -p "请输入用于 Let's Encrypt 的邮箱 (用于续期提醒，强烈推荐): " cert_email
         local email_option=$([[ -n "$cert_email" ]] && echo "--email ${cert_email}" || echo "--register-unsafely-without-email")
         if [[ -z "$cert_email" ]]; then _warn "未提供邮箱，您将不会收到证书到期提醒！"; fi
         certbot --nginx -d "${DOMAIN_NAME}" --non-interactive --agree-tos ${email_option} --redirect || _error "Certbot 获取证书失败。"
@@ -182,10 +228,14 @@ server {
     listen 443 ssl http2; listen [::]:443 ssl http2;
     server_name ${DOMAIN_NAME};
     root ${WEBDEV_DIR};
-    access_log /var/log/nginx/${DOMAIN_NAME}.access.log; error_log /var/log/nginx/${DOMAIN_NAME}.error.log warn;
+
+    access_log /var/log/nginx/${DOMAIN_NAME}.access.log;
+    error_log /var/log/nginx/${DOMAIN_NAME}.error.log warn;
+
     client_max_body_size 0; charset utf-8;
-    dav_ext_lock_zone zone=webdav:10m;
+    
     location ~ /\.(_.*|DS_Store|thumbs\.db)$ { return 403; }
+
     location / {
         auth_basic "Secure WebDAV"; auth_basic_user_file ${NGINX_PASSWD_FILE};
         dav_methods PUT DELETE MKCOL COPY MOVE;
@@ -194,6 +244,7 @@ server {
         create_full_put_path on; autoindex on; dav_ext_lock zone=webdav;
         more_set_headers "DAV: 1, 2";
     }
+
     ssl_certificate /etc/letsencrypt/live/${DOMAIN_NAME}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${DOMAIN_NAME}/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
@@ -265,7 +316,7 @@ do_uninstall() {
             read -r -p "$(echo -e ${YELLOW}"确定要移除 AWUS 脚本和 Nginx 站点配置吗? (y/n): "${NC})" confirm
             if [[ "$confirm" =~ ^[Yy] ]]; then
                 if [ -n "${AWUS_DOMAIN_NAME:-}" ]; then rm -f "/etc/nginx/sites-enabled/${AWUS_DOMAIN_NAME}" "/etc/nginx/sites-available/${AWUS_DOMAIN_NAME}"; fi
-                if [ -f "/etc/nginx/conf.d/awus_dav_ext.conf" ]; then rm -f "/etc/nginx/conf.d/awus_dav_ext.conf"; fi # Just in case
+                if [ -f "/etc/nginx/conf.d/awus_dav_ext.conf" ]; then rm -f "/etc/nginx/conf.d/awus_dav_ext.conf"; fi
                 rm -f "$SCRIPT_SELF_PATH" "$CONFIG_FILE" "$ALIAS_FILE"
                 _info "AWUS 配置已移除。建议运行 'nginx -t && systemctl reload nginx'。"
             fi;;
@@ -326,14 +377,29 @@ ${GREEN}0.${NC} 退出脚本
 main() {
     check_root
     (
-        flock -n 200 || _error "另一个脚本实例正在运行。"
+        flock -n 200 || _error "另一个脚本实例正在运行。请等待其完成后再试。"
+        
         _os_check
         case "${1:-}" in
             install)
                 read -r -p "$(echo -e ${YELLOW}"您正在尝试执行安装/重新配置。\n如果已存在 AWUS 配置，相关文件可能会被覆盖。\n确定要继续吗? (y/n): "${NC})" confirm
                 if [[ "$confirm" =~ ^[Yy] ]]; then do_install; else _info "操作已取消。"; fi
                 exit 0 ;;
-            *)
+            status|uninstall) "do_$1"; exit 0 ;;
+            start|stop|restart) "_nginx_ctl" "$1"; exit 0 ;;
+            accounts) shift; do_accounts_manage "$@"; exit 0 ;;
+            help|-h|--help)
+                echo "Nginx WebDAV Ultimate Script (AWUS) v${SCRIPT_VERSION}"
+                echo "用法: sudo $(basename "$0") [命令] [参数]"
+                echo "无参数运行将进入交互式菜单或安装向导。"; echo
+                echo "主要命令:";
+                echo "  install          交互式安装或重新配置 WebDAV 服务。"
+                echo "  uninstall        卸载 AWUS 配置或 Nginx 服务。"
+                echo "  status           显示服务状态和配置信息。"
+                echo "  start|stop|restart 控制 Nginx 服务。"
+                echo "  accounts <subcommand> [username] 管理用户。"
+                exit 0 ;;
+            ""|menu)
                 if [[ -f "$SCRIPT_SELF_PATH" && -f "$CONFIG_FILE" ]]; then
                     while true; do main_menu; done
                 else
@@ -342,6 +408,7 @@ main() {
                     if [[ "$choice" =~ ^[Yy] ]]; then do_install; else _info "安装已取消。"; fi
                 fi
                 exit 0;;
+            *) _error "无效命令: '$1'. 运行 'sudo $(basename "$0") help' 查看用法。" ;;
         esac
     ) 200> "$LOCK_FILE"
 }
