@@ -157,6 +157,7 @@ install_custom_nginx() {
 do_install() {
     local DOMAIN_NAME WEBDEV_DIR NGINX_PASSWD_FILE ADMIN_USER
     trap 'install_cleanup' ERR
+
     install_cleanup() {
         _warn "\n--- 安装过程中发生错误，正在执行自动清理... ---"; _nginx_ctl "stop" &>/dev/null || true
         if [ -n "${DOMAIN_NAME:-}" ]; then
@@ -201,25 +202,25 @@ EOF_VHOST
     ln -sf "$nginx_vhost_path" "/etc/nginx/sites-enabled/"; rm -f /etc/nginx/sites-enabled/default || true
     nginx -t || _error "Nginx 初始配置测试失败。"; _nginx_ctl "restart"
     
-    # --- **FIXED: Correct Certbot command syntax and logic** ---
+    # --- **FIXED: Correct Certbot command parameter order** ---
     if [ -d "/etc/letsencrypt/live/${DOMAIN_NAME}" ]; then
         _warn "检测到 ${DOMAIN_NAME} 的证书已存在。"; read -r -p "您希望如何处理? [1] 使用现有证书 [2] 强制续订 [0] 中止: " cert_choice
         case "$cert_choice" in
             1) _info "将使用现有证书。";;
             2) 
                 _info "正在强制续订证书...";
-                # Use 'certonly' for renewal, then we control the config injection
-                certbot certonly --nginx --force-renewal -d "${DOMAIN_NAME}" --non-interactive --agree-tos || _error "证书续订失败。";;
+                # Correct parameter order for certbot
+                certbot certonly --force-renewal --non-interactive --agree-tos --nginx -d "${DOMAIN_NAME}" || _error "证书续订失败。";;
             *) _error "操作中止。";;
         esac
     else
         _info "正在申请新的 SSL 证书...";
         read -r -p "请输入用于 Let's Encrypt 的邮箱 (用于续期提醒，强烈推荐): " cert_email
-        local email_arg=$([[ -n "$cert_email" ]] && echo "--email ${cert_email}" || echo "--register-unsafely-without-email")
+        local email_option=$([[ -n "$cert_email" ]] && echo "--email ${cert_email}" || echo "--register-unsafely-without-email")
         if [[ -z "$cert_email" ]]; then _warn "未提供邮箱，您将不会收到证书到期提醒！"; fi
         
-        # Use 'certonly' to just get the certificate. We will build the final config ourselves.
-        certbot certonly --nginx -d "${DOMAIN_NAME}" --non-interactive --agree-tos ${email_arg} || _error "Certbot 获取证书失败。"
+        # Correct parameter order for certbot
+        certbot certonly --non-interactive --agree-tos ${email_option} --nginx -d "${DOMAIN_NAME}" || _error "Certbot 获取证书失败。"
     fi
     
     _info "正在注入最终的 WebDAV 和 SSL 配置...";
@@ -256,7 +257,17 @@ server {
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 }
+EOF_VHOST_FINAL
 
+    _info "最终测试并重启 Nginx..."; nginx -t || _error "最终配置测试失败！"; _nginx_ctl "restart"
+    
+    trap - ERR EXIT
+    _info "${GREEN}--- Nginx WebDAV 安装和配置成功！ ---${NC}";
+    
+    mkdir -p "$SCRIPT_INSTALL_DIR"
+    { echo "AWUS_DOMAIN_NAME=\"${DOMAIN_NAME}\""; echo "AWUS_WEBDEV_DIR=\"${WEBDEV_DIR}\""; echo "AWUS_NGINX_PASSWD_FILE=\"${NGINX_PASSWD_FILE}\""; } > "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE"; setup_script_invocation
+}
 
 EOF_VHOST_FINAL
 
