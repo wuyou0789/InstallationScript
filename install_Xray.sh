@@ -262,12 +262,21 @@ do_install() {
     echo "alias xs='bash ${SCRIPT_SELF_PATH}'" > "$ALIAS_FILE"
     cat > /etc/systemd/system/xray.service <<EOF
 [Unit]
-Description=Xray Service; Documentation=https://github.com/xtls; After=network.target nss-lookup.target
+Description=Xray Service
+Documentation=https://github.com/xtls
+After=network.target nss-lookup.target
+
 [Service]
-User=root; CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE; NoNewPrivileges=true
+User=root
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
 ExecStart=${XRAY_BIN_PATH} run -config ${XRAY_CONFIG_FILE}
-Restart=on-failure; RestartPreventExitStatus=23; LimitNPROC=10000; LimitNOFILE=1000000
+Restart=on-failure
+RestartPreventExitStatus=23
+LimitNPROC=10000
+LimitNOFILE=1000000
+
 [Install]
 WantedBy=multi-user.target
 EOF
