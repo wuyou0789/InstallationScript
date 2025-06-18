@@ -3,7 +3,7 @@
 #================================================================================
 # Nginx WebDAV Ultimate Script (AWUS) - Final Production Release
 #
-# Version: 4.3.2
+# Version: 4.3.3
 # Author: wuyou0789 & AI Assistant
 # GitHub: https://github.com/wuyou0789/InstallationScript
 # License: MIT
@@ -217,7 +217,7 @@ http {
     types_hash_max_size 2048;
     server_tokens off;
 
-    include /etc/nginx/mime.types;
+    include /etc/nginx/mime.types.default;
     default_type application/octet-stream;
 
     access_log /var/log/nginx/access.log;
