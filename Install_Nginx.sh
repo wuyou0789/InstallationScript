@@ -3,13 +3,13 @@
 #================================================================================
 # Nginx WebDAV Ultimate Script (AWUS) - Custom Build Edition
 #
-# Version: 4.2.4 (Final Polished & Optimized)
+# Version: 4.2.5 (Final Polished & Optimized)
 # Author: wuyou0789
 # GitHub: https://github.com/wuyou0789/InstallationScript
 # License: MIT
 #
 # INVOCATION: This script MUST be run with root privileges.
-#             e.g., sudo ./awus.sh install
+#             e.g., sudo ./install.sh install
 #================================================================================
 
 # --- Strict Mode & Environment ---
@@ -39,7 +39,7 @@ _warn() { printf "${YELLOW}[警告] %s${NC}\n" "$*"; }
 _error() { printf "${RED}[错误] %s${NC}\n" "$*"; exit 1; }
 
 # --- Prerequisite and Utility Functions ---
-check_root() { if [[ $EUID -ne 0 ]]; then _error "此脚本必须以 root 权限运行。请使用 'sudo ./awus.sh'。"; fi; }
+check_root() { if [[ $EUID -ne 0 ]]; then _error "此脚本必须以 root 权限运行。请使用 'sudo ./install.sh'。"; fi; }
 _exists() { command -v "$1" >/dev/null 2>&1; }
 
 _os_check() {
