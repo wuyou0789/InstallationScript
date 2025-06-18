@@ -67,7 +67,7 @@ echo "--------------------------------------------------"
 
 # 5. 安装常用工具 (可选)
 echo "步骤 5: 安装常用工具 (可选)"
-COMMON_TOOLS="curl wget unzip"
+COMMON_TOOLS="curl wget unzip rsync"
 # shellcheck disable=SC2155
 read -r -p "是否要安装常用工具 (包含: ${COMMON_TOOLS})? (y/N): " INSTALL_TOOLS_CHOICE
 
