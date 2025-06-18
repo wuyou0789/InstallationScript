@@ -3,6 +3,7 @@
 # 脚本：为Oracle Cloud服务器启用root用户SSH密码登录并可选安装常用工具
 # 警告：以root用户密码登录会增加服务器的安全风险。请谨慎使用，并确保密码足够复杂。
 # 确保以root用户运行
+# Version: 1.7.0
 if [ "$(id -u)" -ne 0 ]; then
    echo "错误：请以root用户或使用 'sudo bash $0' 运行此脚本。"
    exit 1
