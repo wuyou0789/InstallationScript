@@ -9,7 +9,7 @@
 #
 # This script installs and manages one specific setup: VLESS-XTLS-uTLS-REALITY.
 # Designed to be invoked via a one-liner that handles download, execution, and cleanup.
-# New in 1.7.1: Improved robustness for reinstall, input validation, and explicit confirmation.
+# New in 1.7.2: Improved robustness for reinstall, input validation, and explicit confirmation.
 #================================================================================
 
 # --- Script Environment ---
@@ -57,19 +57,30 @@ _os() {
     elif [[ -f "/etc/debian_version" ]]; then
         echo "debian" # Fallback for very old Debian/Ubuntu
     else
-        _error "无法识别的操作系统。"
+        # If no specific file found, try lsb_release if available
+        if _exists "lsb_release"; then
+            lsb_release -is | tr '[:upper:]' '[:lower:]' # Get ID and lowercase it
+        else
+            _error "无法识别的操作系统。"
+        fi
     fi
 }
 
+
 _install_pkgs() {
     local os_type
-    os_type=$(_os)
+    os_type=$(_os) # Get OS type
+    [[ -z "$os_type" ]] && _error "无法确定操作系统类型，无法安装软件包。" # Exit if _os failed
+
     _info "在 ${os_type} 上安装软件包: $*"
     case "$os_type" in
-    centos|rhel|almalinux|rocky) 
+    centos|rhel|almalinux|rocky|fedora) # Added fedora
         _exists "dnf" && dnf install -y "$@" || yum install -y "$@"
         ;;
-    ubuntu|debian) 
+    ubuntu|debian)
+        # Run apt-get update only if needed (e.g., once per script run or if cache is old)
+        # For simplicity here, we run it before install if packages are to be installed.
+        # A more advanced script might track last update time.
         apt-get update -qq && apt-get install -yqq "$@"
         ;;
     *) _error "不支持的操作系统 ($os_type)，请手动安装: $*";;
@@ -81,7 +92,7 @@ install_dependencies() {
     local pkgs_to_install=()
     ! _exists "curl" && pkgs_to_install+=("curl")
     ! _exists "jq" && pkgs_to_install+=("jq")
-    ! _exists "openssl" && pkgs_to_install+=("openssl") # Usually 'openssl' or 'libssl-dev' for tools
+    ! _exists "openssl" && pkgs_to_install+=("openssl") # Usually 'openssl' binary or package providing it
     ! _exists "qrencode" && pkgs_to_install+=("qrencode")
     ! _exists "timeout" && pkgs_to_install+=("coreutils") # for timeout command
 
@@ -97,11 +108,10 @@ _systemctl() {
     local service_name="xray"
     local output
     _info "正在 ${action} ${service_name} 服务..."
-    
-    # Run the command and capture output
+
     output=$(systemctl "${action}" "${service_name}" 2>&1)
     local status=$?
-    sleep 1 # Give it a moment to settle
+    sleep 1
 
     if [[ "$action" == "stop" || "$action" == "disable" ]]; then
         if [[ $status -ne 0 ]]; then
@@ -111,21 +121,19 @@ _systemctl() {
         else
             _info "${service_name} 服务 ${action} 完成。"
         fi
-    else # For start, restart, enable
+    else
         if ! systemctl is-active --quiet "$service_name"; then
             _warn "${service_name} 服务 ${action} 后状态异常。Systemctl 输出: ${output}"
             _warn "请使用 'journalctl -u ${service_name} -e --no-pager' 查看详细日志。"
-            # Do not _error here to allow menu to continue, but warn heavily
         else
             _info "${service_name} 服务 ${action} 完成。"
         fi
     fi
-    
-    # Ensure daemon-reload for enable if successful
+
     if [[ "$action" == "enable" ]] && [[ $status -eq 0 ]]; then
         systemctl daemon-reload &>/dev/null
     fi
-    return $status # Return the status of the systemctl command
+    return $status
 }
 
 
@@ -137,10 +145,9 @@ validate_dest_domain() {
         [[ -z "$new_dest" ]] && new_dest="www.apple.com" && _info "使用默认域名: www.apple.com"
 
         _info "正在严格验证域名 ${new_dest} 对 REALITY 的支持 (超时10秒)..."
-        # Check for timeout command
         local timeout_cmd="timeout 10"
         ! _exists "timeout" && timeout_cmd="" && _warn "timeout 命令未找到，验证可能在无响应时挂起。"
-        
+
         if echo "QUIT" | ${timeout_cmd} openssl s_client -connect "${new_dest}:443" -tls1_3 -servername "${new_dest}" 2>&1 | grep -q "X25519"; then
             _info "域名 ${new_dest} 验证通过！"
             break
@@ -155,10 +162,8 @@ validate_dest_domain() {
 
 install_xray_core() {
     _info "正在使用官方脚本安装/更新 Xray-core..."
-    # Execute the official script
-    if bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root --without-service; then # Modified to not manage service here
+    if bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root --without-service; then
         _info "Xray-core 官方脚本执行完毕。"
-        # Verify Xray binary
         if ! _exists "$XRAY_BIN_PATH"; then
             _error "Xray-core 安装后未找到可执行文件于 ${XRAY_BIN_PATH}。请检查官方脚本输出。"
         fi
@@ -188,10 +193,9 @@ generate_xray_config() {
 
     fallback_target=$(validate_dest_domain)
     
-    # Ensure xray binary is available for generating UUID and keys
     if ! _exists "$XRAY_BIN_PATH"; then
       _warn "Xray 可执行文件未找到，尝试安装/更新核心..."
-      install_xray_core # This will call _error if it fails
+      install_xray_core
     fi
 
     read -p "请输入自定义 UUID (留空将自动生成): " client_uuid
@@ -201,7 +205,6 @@ generate_xray_config() {
         client_uuid="$client_uuid_val"
         _info "已自动生成 UUID: ${client_uuid}"
     else
-        # Basic UUID format check (optional, but good)
         if ! [[ "$client_uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
             _warn "输入的 UUID 格式似乎不正确，但仍会使用。"
         fi
@@ -216,9 +219,8 @@ generate_xray_config() {
     short_id=$(openssl rand -hex 8)
 
     _info "正在创建配置文件内容..."
-    mkdir -p "$(dirname "$XRAY_CONFIG_FILE")" # Ensure directory exists
+    mkdir -p "$(dirname "$XRAY_CONFIG_FILE")"
 
-    # Generate config to temp file first for validation by Xray itself
     jq -n \
       --argjson port "$xray_port" --arg uuid "$client_uuid" --arg p_key "$private_key" \
       --arg s_id "$short_id" --arg target_domain "$fallback_target" \
@@ -230,7 +232,7 @@ generate_xray_config() {
           "streamSettings": {
             "network": "raw", "security": "reality",
             "realitySettings": {
-              "show": false, "dest": ($target_domain + ":443"), "xver": 0, /* Changed "target" to "dest" for newer Xray versions if applicable, check Xray docs */
+              "show": false, "dest": ($target_domain + ":443"), "xver": 0,
               "serverNames": [$target_domain], "privateKey": $p_key, "minClientVer": "", "maxClientVer": "", "maxTimeDiff": 60000, "shortIds": [$s_id]
             }
           },
@@ -258,7 +260,6 @@ generate_xray_config() {
         _info "配置文件已保存至: ${XRAY_CONFIG_FILE}"
     else
         _error "生成的配置文件 ${XRAY_TEMP_CONFIG_FILE} 未通过 Xray 验证。配置未更改。请检查临时文件内容。"
-        # Consider printing the temp file content or jq command for debugging
     fi
 }
 
@@ -275,7 +276,7 @@ display_share_link() {
         .inbounds[0].streamSettings.realitySettings.privateKey,
         .inbounds[0].streamSettings.realitySettings.serverNames[0], 
         .inbounds[0].streamSettings.realitySettings.shortIds[0]
-    ] | @tsv' "$XRAY_CONFIG_FILE" 2>/dev/null) # Suppress jq errors if file is malformed
+    ] | @tsv' "$XRAY_CONFIG_FILE" 2>/dev/null)
 
     if [[ -z "$config_data" ]]; then
         _error "无法从配置文件 ${XRAY_CONFIG_FILE} 中读取必要信息。文件可能已损坏或格式不正确。"
@@ -290,7 +291,9 @@ display_share_link() {
         _warn "无法从私钥生成公钥。分享链接中的公钥将为空。"
     fi
 
-    local vless_link="vless://${uuid}@${server_address}:${xray_port}?security=reality&encryption=none&pbk=${public_key}&host=${sni}&fp=chrome&sid=${short_id}&type=tcp&flow=xtls-rprx-vision&sni=${sni}#$(echo -n "$remark_name" | jq -sRr @uri)"
+    local encoded_remark
+    encoded_remark=$(echo -n "$remark_name" | jq -sRr @uri)
+    local vless_link="vless://${uuid}@${server_address}:${xray_port}?security=reality&encryption=none&pbk=${public_key}&host=${sni}&fp=chrome&sid=${short_id}&type=tcp&flow=xtls-rprx-vision&sni=${sni}#${encoded_remark}"
 
 
     clear
@@ -318,7 +321,7 @@ ${BLUE}---------------- 二维码 (如果 qrencode 已安装) ------------------
 view_existing_config() {
     [[ ! -f "$XRAY_CONFIG_FILE" ]] && _error "配置文件不存在！请先安装。" && return 1
     
-    local server_address="$SHARE_ADDRESS" # Loaded from prefs file
+    local server_address="$SHARE_ADDRESS"
     
     if [[ -z "$server_address" ]]; then
         _info "未在偏好设置中找到连接地址，正在自动检测服务器IP地址..."
@@ -341,33 +344,42 @@ regenerate_share_link() {
     local auto_ip
     auto_ip=$(curl -s4m10 ip.sb || curl -s4m10 icanhazip.com || echo "")
     
-    local current_pref_address="$SHARE_ADDRESS" # Loaded from prefs file
-    local prompt_ip_option="N"
+    local current_pref_address="$SHARE_ADDRESS"
     if [[ -n "$current_pref_address" ]]; then
-        _info "当前偏好连接地址: ${current_pref_address}"
-        _info "自动检测到的IP地址: ${auto_ip:- (检测失败)}"
-        read -p "要使用哪个地址作为分享链接? [C]当前偏好, [A]自动IP, [M]手动输入: " addr_choice
-        case "$addr_choice" in
-            [Cc]) server_address="$current_pref_address" ;;
-            [Aa]) 
-                [[ -z "$auto_ip" ]] && _error "无法自动检测IP，请手动输入。"
-                server_address="$auto_ip" 
-                ;;
-            [Mm]) read -p "请输入您的域名或IP地址: " server_address ;;
-            *) _info "无效选择，使用当前偏好地址。" ; server_address="$current_pref_address" ;;
-        esac
-    else # No preference saved yet
-        _info "自动检测到的IP地址: ${auto_ip:- (检测失败)}"
-        read -p "是否为分享链接指定一个域名/IP作为连接地址? (默认使用自动检测的IP: ${auto_ip}) [y/N]: " use_manual
-        if [[ "$use_manual" =~ ^[Yy]$ ]]; then
-            read -p "请输入您的域名或IP地址: " server_address
-        else
-            [[ -z "$auto_ip" ]] && _error "无法自动检测IP，且您未手动输入。"
-            server_address="${auto_ip}"
-        fi
+        _info "当前偏好连接地址: ${YELLOW}${current_pref_address}${NC}"
     fi
+    _info "自动检测到的IP地址: ${YELLOW}${auto_ip:- (检测失败或为空)}${NC}"
+    
+    local choice_prompt="请选择连接地址来源: [C]当前偏好 (${current_pref_address:-无}), [A]自动IP (${auto_ip:-N/A}), [M]手动输入: "
+    if [[ -z "$current_pref_address" && -z "$auto_ip" ]]; then
+        choice_prompt="当前无偏好地址且无法自动检测IP。请[M]手动输入连接地址: "
+    elif [[ -z "$current_pref_address" ]]; then
+        choice_prompt="无偏好地址。请选择: [A]自动IP (${auto_ip}), [M]手动输入: "
+    elif [[ -z "$auto_ip" ]]; then
+         choice_prompt="无法自动检测IP。请选择: [C]当前偏好 (${current_pref_address}), [M]手动输入: "
+    fi
+
+    read -p "$choice_prompt" addr_choice
+    
+    case "$addr_choice" in
+        [Cc]) 
+            [[ -z "$current_pref_address" ]] && _error "无偏好地址可选，请手动输入或使用自动IP。"
+            server_address="$current_pref_address" 
+            ;;
+        [Aa]) 
+            [[ -z "$auto_ip" ]] && _error "无法自动检测IP，请手动输入或使用偏好地址。"
+            server_address="$auto_ip" 
+            ;;
+        [Mm]) 
+            read -p "请输入您的域名或IP地址: " server_address 
+            ;;
+        *) 
+            _warn "无效选择。操作取消。"
+            return 1
+            ;;
+    esac
      
-    [[ -z "$server_address" ]] && _error "连接地址不能为空！"
+    [[ -z "$server_address" ]] && _error "连接地址不能为空！操作已取消。" && return 1
 
     echo "SHARE_ADDRESS=\"$server_address\"" > "$PREFS_FILE"
     _info "您的选择 '${server_address}' 已被保存为默认连接地址。"
@@ -379,7 +391,6 @@ regenerate_share_link() {
     display_share_link "$server_address" "$remark_name" || _warn "生成分享链接时发生错误。"
 }
 
-# $1: is_reinstall_from_menu ("true" or "false")
 do_install() {
     local is_reinstall_from_menu="$1"
     check_root
@@ -389,7 +400,7 @@ do_install() {
         read -p "确定要继续吗? (y/N): " confirm_reinstall
         if [[ ! "$confirm_reinstall" =~ ^[Yy]$ ]]; then
             _info "重新安装已取消。"
-            return 0 # Return to menu without error
+            return 0
         fi
         _info "开始执行重新安装..."
     else
@@ -397,15 +408,11 @@ do_install() {
     fi
 
     install_dependencies
-    install_xray_core # Installs or updates Xray binary
-    generate_xray_config # Generates and validates new config.json
+    install_xray_core
+    generate_xray_config
 
     _info "正在设置脚本环境和别名..."
     mkdir -p "$SCRIPT_DIR"
-    # $0 is the path of the script being run.
-    # If run as "bash script.sh", $0 is "script.sh".
-    # If run as "bash /path/to/script.sh", $0 is "/path/to/script.sh".
-    # The initial one-liner should download to a known temp path first.
     if ! cp -f "$0" "$SCRIPT_SELF_PATH"; then
       _warn "警告：无法将脚本自身 ($0) 复制到 ${SCRIPT_SELF_PATH}。"
       _warn "这通常发生在直接通过管道执行脚本时。菜单功能可能不完整或不持久。"
@@ -416,10 +423,7 @@ do_install() {
     fi
     
     echo "alias xs='bash ${SCRIPT_SELF_PATH}'" > "$ALIAS_FILE"
-    # source "$ALIAS_FILE" # Sourcing here only affects current script, not parent shell
 
-    # Create systemd service file for Xray (if not handled by official script sufficiently)
-    # The official script usually handles this, but we ensure it with --without-service then manage here
     cat > /etc/systemd/system/xray.service <<EOF
 [Unit]
 Description=Xray Service
@@ -442,21 +446,18 @@ WantedBy=multi-user.target
 EOF
     _info "Xray systemd 服务文件已创建/更新。"
 
-
     systemctl daemon-reload
-    if ! systemctl enable xray &>/dev/null; then # Suppress "Created symlink..."
+    if ! systemctl enable xray &>/dev/null; then
         _warn "启用 Xray 服务失败。"
     else
         _info "Xray 服务已设置为开机自启。"
     fi
     
-    if ! _systemctl "restart"; then # _systemctl will print detailed warnings on failure
+    if ! _systemctl "restart"; then
         _warn "Xray 服务启动失败。请检查上述日志和配置文件。"
         _warn "您可能需要手动修复配置文件 (${XRAY_CONFIG_FILE}) 并尝试 'systemctl restart xray'。"
     fi
     
-    # Regenerate share link using the new configuration
-    # For initial install, ask for preference. For reinstall, it will also ask.
     regenerate_share_link 
 
     _info "Xray 安装/重新安装完成！"
@@ -473,17 +474,16 @@ do_uninstall() {
              _warn "禁用 Xray 服务时发生错误。"
         fi
         _info "正在尝试使用官方脚本卸载 Xray-core..."
-        # Run official uninstall script, ignore errors if it fails (e.g. already removed)
         bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove --purge &>/dev/null 
         
         _info "正在删除相关文件和目录..."
         rm -rf "$SCRIPT_DIR" \
                  "$XRAY_CONFIG_FILE" \
-                 "$(dirname "$XRAY_CONFIG_FILE")" \ # Removes /usr/local/etc/xray
-                 "$XRAY_BIN_PATH" \ # In case official script missed it or wasn't run
+                 "$(dirname "$XRAY_CONFIG_FILE")" \
+                 "$XRAY_BIN_PATH" \
                  "$ALIAS_FILE" \
                  "/etc/systemd/system/xray.service" \
-                 "/etc/systemd/system/xray.service.d" # Remove any drop-in snippets
+                 "/etc/systemd/system/xray.service.d"
         
         systemctl daemon-reload
 
@@ -495,8 +495,8 @@ do_uninstall() {
     fi
 }
 
-# --- Menu Functions ---
 _load_prefs() {
+    SHARE_ADDRESS="" # Default to empty if not set
     [[ -f "$PREFS_FILE" ]] && source "$PREFS_FILE"
 }
 
@@ -506,6 +506,8 @@ _safe_update_config_value() {
     local failure_msg="$3"
 
     [[ ! -f "$XRAY_CONFIG_FILE" ]] && _error "配置文件 ${XRAY_CONFIG_FILE} 不存在。" && return 1
+    ! _exists "$XRAY_BIN_PATH" && _error "Xray 执行文件 ${XRAY_BIN_PATH} 未找到。" && return 1
+
 
     if jq "$jq_filter" "$XRAY_CONFIG_FILE" > "$XRAY_TEMP_CONFIG_FILE" && [[ -s "$XRAY_TEMP_CONFIG_FILE" ]]; then
         if "$XRAY_BIN_PATH" check -c "$XRAY_TEMP_CONFIG_FILE"; then
@@ -513,22 +515,22 @@ _safe_update_config_value() {
             _info "$success_msg"
             _systemctl "restart" && regenerate_share_link
         else
-            _error "修改后的配置文件未通过 Xray 验证。配置未更改。"
-            rm -f "$XRAY_TEMP_CONFIG_FILE"
+            _error "修改后的配置文件未通过 Xray 验证。配置未更改。临时文件: $XRAY_TEMP_CONFIG_FILE"
+            # rm -f "$XRAY_TEMP_CONFIG_FILE" # Keep for inspection
         fi
     else
-        _error "$failure_msg (jq 操作失败或临时文件为空)。配置文件未更改。"
-        rm -f "$XRAY_TEMP_CONFIG_FILE"
+        _error "$failure_msg (jq 操作失败或临时文件为空)。配置文件未更改。临时文件: $XRAY_TEMP_CONFIG_FILE"
+        # rm -f "$XRAY_TEMP_CONFIG_FILE" # Keep for inspection
     fi
 }
 
 main_menu() {
-    _load_prefs # Load preferences at the start of each menu display
+    _load_prefs
     clear
     local xray_status xray_version config_exists
-    systemctl is-active --quiet xray && xray_status="${GREEN}运行中${NC}" || xray_status="${RED}已停止${NC}"
-    _exists "$XRAY_BIN_PATH" && xray_version="$($XRAY_BIN_PATH version | head -n1 | awk '{print $2}')" || xray_version="${RED}未安装${NC}"
-    [[ -f "$XRAY_CONFIG_FILE" ]] && config_exists="${GREEN}存在${NC}" || config_exists="${RED}不存在${NC}"
+    if systemctl is-active --quiet xray; then xray_status="${GREEN}运行中${NC}"; else xray_status="${RED}已停止${NC}"; fi
+    if _exists "$XRAY_BIN_PATH"; then xray_version="$($XRAY_BIN_PATH version | head -n1 | awk '{print $2}')"; else xray_version="${RED}未安装${NC}"; fi
+    if [[ -f "$XRAY_CONFIG_FILE" ]]; then config_exists="${GREEN}存在${NC}"; else config_exists="${RED}不存在${NC}"; fi
 
     echo -e "
 ${BLUE}Xray Ultimate Simplified Script | v${SCRIPT_VERSION}${NC}
@@ -536,7 +538,7 @@ ${BLUE}===================================================${NC}
  Xray 状态: ${xray_status}
  Xray 版本: ${xray_version}
  配置文件:  ${config_exists}
- 偏好地址:  ${SHARE_ADDRESS:-未设置}
+ 偏好地址:  ${YELLOW}${SHARE_ADDRESS:-未设置}${NC}
 ${BLUE}---------------------------------------------------${NC}
 ${GREEN}1.${NC}  完整安装/重新安装 (覆盖当前配置)
 ${GREEN}2.${NC}  ${RED}卸载 Xray 和本脚本${NC}
@@ -556,9 +558,9 @@ ${GREEN}0.${NC}  退出脚本
 
     case "$option" in
     0) exit 0 ;;
-    1) do_install "true" ;; # Pass "true" to indicate it's a reinstall from menu
+    1) do_install "true" ;;
     2) do_uninstall ;;
-    3) install_xray_core && _systemctl "restart" ;; # install_xray_core now handles its own verification
+    3) install_xray_core && _systemctl "restart" ;;
     4) _systemctl "start" ;;
     5) _systemctl "stop" ;;
     6) _systemctl "restart" ;;
@@ -569,12 +571,12 @@ ${GREEN}0.${NC}  退出脚本
         journalctl -u xray -f --no-pager 
         ;;
     104)
-        local new_uuid
+        local new_uuid new_uuid_val
         read -p "请输入新 UUID (留空自动生成): " new_uuid
         if [[ -z "$new_uuid" ]]; then
-            ! _exists "$XRAY_BIN_PATH" && _error "Xray 未安装，无法生成 UUID。"
+            ! _exists "$XRAY_BIN_PATH" && _error "Xray 未安装，无法生成 UUID。" && return 1
             new_uuid_val=$($XRAY_BIN_PATH uuid)
-            [[ -z "$new_uuid_val" ]] && _error "无法使用 Xray 生成 UUID。"
+            [[ -z "$new_uuid_val" ]] && _error "无法使用 Xray 生成 UUID。" && return 1
             new_uuid="$new_uuid_val"
             _info "已自动生成新 UUID: ${new_uuid}"
         fi
@@ -583,14 +585,13 @@ ${GREEN}0.${NC}  退出脚本
         ;;
     105)
         local new_dest
-        new_dest=$(validate_dest_domain) # This function now returns the validated domain
+        new_dest=$(validate_dest_domain)
         _safe_update_config_value ".inbounds[0].streamSettings.realitySettings.dest = \"${new_dest}:443\" | .inbounds[0].streamSettings.realitySettings.serverNames = [\"$new_dest\"]" \
                                   "回落目标域名修改成功。" "修改回落目标域名失败。"
         ;;
     *) _warn "无效的选项。" ;;
     esac
     
-    # Pause logic for all options except log viewing and exit
     if [[ "$option" != "103" && "$option" != "0" ]]; then
         echo && read -n 1 -s -r -p "按任意键返回主菜单..."
     fi
@@ -598,37 +599,28 @@ ${GREEN}0.${NC}  退出脚本
 
 
 # --- Script Entry Point ---
-# This structure ensures $0 is the actual script file path if downloaded first.
 if [[ "$1" == "install" ]]; then
-    # This is the first-time install scenario, typically run after downloading the script
-    # e.g., curl -o install_Xray.sh <URL> && sudo bash install_Xray.sh install
-    do_install "false" # Pass "false" indicating it's not a reinstall from menu
+    do_install "false"
 elif [[ "$1" == "menu" && -f "$SCRIPT_SELF_PATH" && "$0" == "$SCRIPT_SELF_PATH" ]]; then
-    # This is for internal recall by the alias 'xs'
     check_root
     _load_prefs
     while true; do main_menu; done
 else
-    # If script is run directly without 'install' or specific 'menu' call,
-    # assume user wants the menu if Xray is already configured, else offer install.
     check_root
-    _load_prefs # Load prefs to check SHARE_ADDRESS etc.
-    if [[ ! -f "$XRAY_CONFIG_FILE" ]]; then
-      _warn "未找到 Xray 配置文件或管理脚本未正确初始化。"
+    _load_prefs
+    if [[ ! -f "$SCRIPT_SELF_PATH" || ! -f "$XRAY_CONFIG_FILE" ]]; then
+      _warn "未找到 Xray 配置文件或管理脚本未正确初始化 ($SCRIPT_SELF_PATH)。"
       read -p "是否立即开始完整安装? (y/N): " choice
       if [[ "$choice" =~ ^[Yy]$ ]]; then
-          # For direct execution without 'install' arg, ensure $0 is correct for cp
-          # This requires the user to have downloaded the script first, e.g. script.sh
-          if [[ -f "$0" ]]; then
+          if [[ -f "$0" && "$0" != "-" && "$0" != "bash" && "$0" != "-bash" && "$0" != "/bin/bash" && ! ("$0" =~ ^-s$) ]]; then # Check if $0 looks like a script file path
             do_install "false"
           else
-            _error "无法确定脚本文件路径 ($0)。请先下载脚本再运行，例如：\ncurl -o install_Xray.sh <URL>\nsudo bash install_Xray.sh install"
+            _error "无法确定脚本文件路径 ($0)。\n请先下载脚本，然后运行，例如：\n  curl -o install_Xray.sh <你的脚本URL>\n  sudo bash install_Xray.sh install"
           fi
       else
         _info "安装已取消。"
       fi
       exit 0
     fi
-    # If config exists, go to menu (this makes 'bash menu.sh' work directly)
     while true; do main_menu; done
 fi
