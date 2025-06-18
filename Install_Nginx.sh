@@ -1,6 +1,8 @@
-# Version: 4.3.6 (Final Polished & Optimized)Add commentMore actions
+#================================================================================
+# Nginx WebDAV Ultimate Script (AWUS) - Final Production Release
+#
+# Version: 4.3.0
 # Author: wuyou0789 & AI Assistant
-# Author: wuyou0789
 # GitHub: https://github.com/wuyou0789/InstallationScript
 # License: MIT
 #
