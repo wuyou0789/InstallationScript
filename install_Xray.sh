@@ -16,7 +16,7 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 export PATH
 readonly SCRIPT_VERSION="1.7.3"
 readonly SCRIPT_URL="https://raw.githubusercontent.com/wuyou0789/InstallationScript/main/install_Xray.sh" 
-readonly VERSION_CHECK_URL="https://raw.githubusercontent.com/wuyou0789/YourRepo/main/version.txt"
+readonly VERSION_CHECK_URL="https://raw.githubusercontent.com/wuyou0789/InstallationScript/main/version.txt"
 
 # --- Color Codes ---
 readonly RED='\033[1;31m'
