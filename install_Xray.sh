@@ -3,18 +3,18 @@
 #================================================================================
 # Xray Ultimate Simplified Script (XUS)
 #
-# Version: 1.7.3 (Refine official script calls, Add GeoData update)
+# Version: 1.7.4 (Use 'xray test' for config validation)
 # Author: AI Assistant & wuyou0789
 # GitHub: (Host this on your own GitHub repository)
 #
-# New in 1.7.3: Removed --without-service from core install, added GeoData update menu.
+# New in 1.7.4: Changed config validation from 'xray check' to 'xray test'.
 #================================================================================
 
 # --- Script Environment ---
 set -o pipefail
 PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 export PATH
-readonly SCRIPT_VERSION="1.7.3"
+readonly SCRIPT_VERSION="1.7.4"
 readonly SCRIPT_URL="https://raw.githubusercontent.com/wuyou0789/InstallationScript/main/install_Xray.sh" 
 readonly VERSION_CHECK_URL="https://raw.githubusercontent.com/wuyou0789/InstallationScript/main/version.txt"
 
@@ -29,7 +29,7 @@ readonly NC='\033[0m'
 readonly SCRIPT_DIR="/usr/local/etc/xus-script"
 readonly SCRIPT_SELF_PATH="${SCRIPT_DIR}/menu.sh"
 readonly PREFS_FILE="${SCRIPT_DIR}/user_prefs.conf"
-readonly XRAY_CONFIG_FILE="/usr/local/etc/xray/config.json"
+readonly XRAY_CONFIG_FILE="/usr/local/etc/xray/config.json" # 主配置文件路径不变
 readonly XRAY_BIN_PATH="/usr/local/bin/xray"
 readonly ALIAS_FILE="/etc/profile.d/xus-alias.sh"
 readonly XRAY_TEMP_CONFIG_FILE="/tmp/xray_config_tmp.json"
@@ -116,7 +116,7 @@ install_xray_core() {
     chmod +x "$temp_official_script"
     
     _info "执行 Xray 官方脚本 (参数: install -u root)..."
-    if bash "$temp_official_script" install -u root; then # Removed --without-service
+    if bash "$temp_official_script" install -u root; then
         _info "Xray-core 官方脚本执行完毕。"
         rm -f "$temp_official_script"
         ! _exists "$XRAY_BIN_PATH" && _error "Xray-core 安装后未找到: ${XRAY_BIN_PATH}"
@@ -183,10 +183,19 @@ generate_xray_config() {
            {"type": "field", "outboundTag": "block", "domain": ["geosite:cn"], "ruleTag": "block-cn-domain"},
            {"type": "field", "outboundTag": "block", "protocol": ["bittorrent"], "ruleTag": "block-bittorrent"},
            {"type": "field", "outboundTag": "block", "ip": ["geoip:private"], "ruleTag": "block-private-ip"}]}}' > "$XRAY_TEMP_CONFIG_FILE" || _error "jq 生成配置失败。"
+    
     _info "验证配置文件 ${XRAY_TEMP_CONFIG_FILE}..."
-    if "$XRAY_BIN_PATH" check -c "$XRAY_TEMP_CONFIG_FILE"; then
-        _info "配置验证通过。" && mv "$XRAY_TEMP_CONFIG_FILE" "$XRAY_CONFIG_FILE" && _info "配置已保存: ${XRAY_CONFIG_FILE}"
-    else _error "配置 ${XRAY_TEMP_CONFIG_FILE} 未通过验证。配置未改。"; fi
+    if "$XRAY_BIN_PATH" test -config "$XRAY_TEMP_CONFIG_FILE"; then # MODIFIED: xray test
+        _info "配置验证通过。"
+        mkdir -p "$(dirname "$XRAY_CONFIG_FILE")" # Ensure directory exists
+        mv "$XRAY_TEMP_CONFIG_FILE" "$XRAY_CONFIG_FILE"
+        _info "配置已保存: ${XRAY_CONFIG_FILE}"
+    else 
+        local test_output
+        test_output=$($XRAY_BIN_PATH test -config "$XRAY_TEMP_CONFIG_FILE" 2>&1)
+        _error "配置 ${XRAY_TEMP_CONFIG_FILE} 未通过验证。配置未改。\n验证输出:\n${test_output}\n请检查临时文件。"
+        # rm -f "$XRAY_TEMP_CONFIG_FILE" # Keep for inspection
+    fi
 }
 
 display_share_link() {
@@ -290,14 +299,24 @@ _load_prefs() { SHARE_ADDRESS=""; [[ -f "$PREFS_FILE" ]] && source "$PREFS_FILE"
 
 _safe_update_config_value() {
     local jq_filter="$1" success_msg="$2" failure_msg="$3"
-    [[ ! -f "$XRAY_CONFIG_FILE" ]] && _error "配置 ${XRAY_CONFIG_FILE} 不存在。" && return 1
+    [[ ! -f "$XRAY_CONFIG_FILE" ]] && _error "配置文件 ${XRAY_CONFIG_FILE} 不存在。" && return 1
     ! _exists "$XRAY_BIN_PATH" && _error "Xray ${XRAY_BIN_PATH} 未找到。" && return 1
+
     if jq "$jq_filter" "$XRAY_CONFIG_FILE" > "$XRAY_TEMP_CONFIG_FILE" && [[ -s "$XRAY_TEMP_CONFIG_FILE" ]]; then
-        if "$XRAY_BIN_PATH" check -c "$XRAY_TEMP_CONFIG_FILE"; then
+        # MODIFIED: xray test
+        if "$XRAY_BIN_PATH" test -config "$XRAY_TEMP_CONFIG_FILE"; then
             mv "$XRAY_TEMP_CONFIG_FILE" "$XRAY_CONFIG_FILE"; _info "$success_msg"
             _systemctl "restart" && regenerate_share_link
-        else _error "修改后配置未通过验证。配置未改。临时文件: $XRAY_TEMP_CONFIG_FILE"; fi
-    else _error "$failure_msg (jq或临时文件出错)。配置未改。临时文件: $XRAY_TEMP_CONFIG_FILE"; fi
+        else 
+            local test_output
+            test_output=$($XRAY_BIN_PATH test -config "$XRAY_TEMP_CONFIG_FILE" 2>&1)
+            _error "修改后配置未通过验证。配置未改。\n验证输出:\n${test_output}\n临时文件: $XRAY_TEMP_CONFIG_FILE";
+            # rm -f "$XRAY_TEMP_CONFIG_FILE" # Keep for inspection
+        fi
+    else 
+        _error "$failure_msg (jq或临时文件出错)。配置未改。临时文件: $XRAY_TEMP_CONFIG_FILE";
+        # rm -f "$XRAY_TEMP_CONFIG_FILE" # Keep for inspection
+    fi
 }
 
 main_menu() {
