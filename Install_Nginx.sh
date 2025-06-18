@@ -26,7 +26,7 @@ readonly NC='\033[0m'
 
 # --- Configuration Paths ---
 readonly SCRIPT_INSTALL_DIR="/usr/local/etc/awus-script"
-readonly SCRIPT_SELF_PATH="${SCRIPT_INSTALL_DIR}/awus.sh"
+readonly SCRIPT_SELF_PATH="${SCRIPT_INSTALL_DIR}/install.sh"
 readonly CONFIG_FILE="${SCRIPT_INSTALL_DIR}/config.conf"
 readonly DEFAULT_NGINX_PASSWD_FILE="/etc/nginx/webdav.passwd"
 readonly ALIAS_FILE="/etc/profile.d/awus-alias.sh"
