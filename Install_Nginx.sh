@@ -190,20 +190,31 @@ do_install() {
 user www-data;
 worker_processes auto;
 pid /var/run/nginx.pid;
-events { worker_connections 768; }
+events {
+    worker_connections 768;
+    # multi_accept on;
+}
 http {
-    sendfile on
-    tcp_nopush on
-    tcp_nodelay on
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
     keepalive_timeout 65;
-    types_hash_max_size 2048
+    types_hash_max_size 2048;
     server_tokens off;
-    include /etc/nginx/mime.types
+
+    include /etc/nginx/mime.types;
     default_type application/octet-stream;
-    access_log /var/log/nginx/access.log
+
+    access_log /var/log/nginx/access.log;
     error_log /var/log/nginx/error.log;
+
+    # gzip on;
+    # gzip_disable "msie6";
+    # ... other gzip settings if needed ...
+
     dav_ext_lock_zone zone=webdav:10m;
-    include /etc/nginx/conf.d/*.conf
+
+    include /etc/nginx/conf.d/*.conf;
     include /etc/nginx/sites-enabled/*;
 }
 EOF_NGINX_CONF
