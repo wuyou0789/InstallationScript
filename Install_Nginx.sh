@@ -192,12 +192,19 @@ worker_processes auto;
 pid /var/run/nginx.pid;
 events { worker_connections 768; }
 http {
-    sendfile on; tcp_nopush on; tcp_nodelay on; keepalive_timeout 65;
-    types_hash_max_size 2048; server_tokens off;
-    include /etc/nginx/mime.types; default_type application/octet-stream;
-    access_log /var/log/nginx/access.log; error_log /var/log/nginx/error.log;
+    sendfile on
+    tcp_nopush on
+    tcp_nodelay on
+    keepalive_timeout 65;
+    types_hash_max_size 2048
+    server_tokens off;
+    include /etc/nginx/mime.types
+    default_type application/octet-stream;
+    access_log /var/log/nginx/access.log
+    error_log /var/log/nginx/error.log;
     dav_ext_lock_zone zone=webdav:10m;
-    include /etc/nginx/conf.d/*.conf; include /etc/nginx/sites-enabled/*;
+    include /etc/nginx/conf.d/*.conf
+    include /etc/nginx/sites-enabled/*;
 }
 EOF_NGINX_CONF
     elif ! grep -q 'dav_ext_lock_zone' /etc/nginx/nginx.conf; then
@@ -242,20 +249,24 @@ server {
     location / { return 301 https://\$server_name\$request_uri; }
 }
 server {
-    listen 443 ssl http2; listen [::]:443 ssl http2;
+    listen 443 ssl http2
+    listen [::]:443 ssl http2;
     server_name ${DOMAIN_NAME};
     root ${WEBDEV_DIR};
 
-    access_log /var/log/nginx/${DOMAIN_NAME}.access.log; error_log /var/log/nginx/${DOMAIN_NAME}.error.log warn;
+    access_log /var/log/nginx/${DOMAIN_NAME}.access.log
+    error_log /var/log/nginx/${DOMAIN_NAME}.error.log warn;
     client_max_body_size 0; charset utf-8;
     location ~ /\.(_.*|DS_Store|thumbs\.db)$ { return 403; }
 
     location / {
-        auth_basic "Secure WebDAV"; auth_basic_user_file ${NGINX_PASSWD_FILE};
+        auth_basic "Secure WebDAV"
+        auth_basic_user_file ${NGINX_PASSWD_FILE};
         dav_methods PUT DELETE MKCOL COPY MOVE;
         dav_ext_methods PROPFIND OPTIONS LOCK UNLOCK;
         dav_access user:rw group:r all:r;
-        create_full_put_path on; autoindex on; dav_ext_lock zone=webdav;
+        create_full_put_path on
+        autoindex on; dav_ext_lock zone=webdav;
         more_set_headers "DAV: 1, 2";
     }
     ssl_certificate /etc/letsencrypt/live/${DOMAIN_NAME}/fullchain.pem;
