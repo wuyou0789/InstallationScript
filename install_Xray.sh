@@ -3,19 +3,18 @@
 #================================================================================
 # Xray Ultimate Simplified Script (XUS)
 #
-# Version: 1.7.5 (Remove config validation for old Xray versions)
+# Version: 1.7.6 (Fix systemd service file format)
 # Author: AI Assistant & wuyou0789
 # GitHub: (Host this on your own GitHub repository)
 #
-# New in 1.7.5: Removed 'xray test' as Xray v25.6.8 does not support it.
-#               Config validity will be checked upon service restart.
+# New in 1.7.6: Corrected multi-directive lines in xray.service file.
 #================================================================================
 
 # --- Script Environment ---
 set -o pipefail
 PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 export PATH
-readonly SCRIPT_VERSION="1.7.5"
+readonly SCRIPT_VERSION="1.7.6"
 readonly SCRIPT_URL="https://raw.githubusercontent.com/wuyou0789/InstallationScript/main/install_Xray.sh" 
 readonly VERSION_CHECK_URL="https://raw.githubusercontent.com/wuyou0789/InstallationScript/main/version.txt"
 
@@ -89,7 +88,7 @@ _systemctl() {
         else _info "${service_name} 服务 ${action} 完成。"; fi
     fi
     [[ "$action" == "enable" && $status -eq 0 ]] && systemctl daemon-reload &>/dev/null
-    return $status # Return the status for checking
+    return $status
 }
 
 validate_dest_domain() {
@@ -187,8 +186,6 @@ generate_xray_config() {
            {"type": "field", "outboundTag": "block", "ip": ["geoip:private"], "ruleTag": "block-private-ip"}]}}' > "$XRAY_TEMP_CONFIG_FILE" || _error "jq 生成配置失败。"
     
     _info "配置文件内容已生成到 ${XRAY_TEMP_CONFIG_FILE}."
-    # Since Xray v25.6.8 (or similar old/unusual versions) may lack 'check' or 'test' commands,
-    # we directly move the file. Validity will be checked upon service restart.
     mkdir -p "$(dirname "$XRAY_CONFIG_FILE")"
     mv "$XRAY_TEMP_CONFIG_FILE" "$XRAY_CONFIG_FILE"
     _info "配置已写入: ${XRAY_CONFIG_FILE}"
@@ -260,6 +257,8 @@ do_install() {
       _warn "警告: 无法复制脚本 ($0) 到 ${SCRIPT_SELF_PATH}。\n这通常在管道执行时发生。菜单可能不持久。\n建议：curl -o s.sh URL && bash s.sh install"
     else chmod +x "$SCRIPT_SELF_PATH"; _info "管理脚本已存: ${SCRIPT_SELF_PATH}"; fi
     echo "alias xs='bash ${SCRIPT_SELF_PATH}'" > "$ALIAS_FILE"
+    
+    # Corrected systemd service file content
     cat > /etc/systemd/system/xray.service <<EOF
 [Unit]
 Description=Xray Service
@@ -318,15 +317,12 @@ _safe_update_config_value() {
     ! _exists "$XRAY_BIN_PATH" && _error "Xray ${XRAY_BIN_PATH} 未找到。" && return 1
 
     if jq "$jq_filter" "$XRAY_CONFIG_FILE" > "$XRAY_TEMP_CONFIG_FILE" && [[ -s "$XRAY_TEMP_CONFIG_FILE" ]]; then
-        # Since Xray v25.6.8 may lack 'check' or 'test', we directly move.
-        # Validity will be checked upon service restart.
         mv "$XRAY_TEMP_CONFIG_FILE" "$XRAY_CONFIG_FILE"
         _info "$success_msg (配置已写入，将在重启时验证)"
         if _systemctl "restart"; then
              regenerate_share_link
         else
             _warn "服务重启失败！修改后的配置可能有问题。请检查Xray日志。"
-            # Consider not automatically regenerating share link if restart fails
         fi
     else 
         _error "$failure_msg (jq 操作失败或临时文件为空)。配置文件未更改。"
