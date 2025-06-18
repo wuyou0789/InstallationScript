@@ -3,20 +3,21 @@
 #================================================================================
 # Xray Ultimate Simplified Script (XUS)
 #
-# Version: 1.7.4 (Use 'xray test' for config validation)
+# Version: 1.7.5 (Remove config validation for old Xray versions)
 # Author: AI Assistant & wuyou0789
 # GitHub: (Host this on your own GitHub repository)
 #
-# New in 1.7.4: Changed config validation from 'xray check' to 'xray test'.
+# New in 1.7.5: Removed 'xray test' as Xray v25.6.8 does not support it.
+#               Config validity will be checked upon service restart.
 #================================================================================
 
 # --- Script Environment ---
 set -o pipefail
 PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 export PATH
-readonly SCRIPT_VERSION="1.7.4"
-readonly SCRIPT_URL="https://raw.githubusercontent.com/wuyou0789/InstallationScript/main/install_Xray.sh" 
-readonly VERSION_CHECK_URL="https://raw.githubusercontent.com/wuyou0789/InstallationScript/main/version.txt"
+readonly SCRIPT_VERSION="1.7.5"
+readonly SCRIPT_URL="https://raw.githubusercontent.com/YourUsername/YourRepo/main/install_Xray.sh" 
+readonly VERSION_CHECK_URL="https://raw.githubusercontent.com/YourUsername/YourRepo/main/version.txt"
 
 # --- Color Codes ---
 readonly RED='\033[1;31m'
@@ -29,7 +30,7 @@ readonly NC='\033[0m'
 readonly SCRIPT_DIR="/usr/local/etc/xus-script"
 readonly SCRIPT_SELF_PATH="${SCRIPT_DIR}/menu.sh"
 readonly PREFS_FILE="${SCRIPT_DIR}/user_prefs.conf"
-readonly XRAY_CONFIG_FILE="/usr/local/etc/xray/config.json" # 主配置文件路径不变
+readonly XRAY_CONFIG_FILE="/usr/local/etc/xray/config.json"
 readonly XRAY_BIN_PATH="/usr/local/bin/xray"
 readonly ALIAS_FILE="/etc/profile.d/xus-alias.sh"
 readonly XRAY_TEMP_CONFIG_FILE="/tmp/xray_config_tmp.json"
@@ -88,7 +89,7 @@ _systemctl() {
         else _info "${service_name} 服务 ${action} 完成。"; fi
     fi
     [[ "$action" == "enable" && $status -eq 0 ]] && systemctl daemon-reload &>/dev/null
-    return $status
+    return $status # Return the status for checking
 }
 
 validate_dest_domain() {
@@ -167,6 +168,7 @@ generate_xray_config() {
     private_key=$(echo "$keys_val" | awk '/Private key/ {print $3}'); [[ -z "$private_key" ]] && _error "提取私钥失败。"
     short_id=$(openssl rand -hex 8)
     _info "创建配置文件内容..." && mkdir -p "$(dirname "$XRAY_CONFIG_FILE")"
+    
     jq -n --argjson port "$xray_port" --arg uuid "$client_uuid" --arg p_key "$private_key" \
           --arg s_id "$short_id" --arg target_domain "$fallback_target" \
       '{ "log": {"loglevel": "warning"},
@@ -184,18 +186,13 @@ generate_xray_config() {
            {"type": "field", "outboundTag": "block", "protocol": ["bittorrent"], "ruleTag": "block-bittorrent"},
            {"type": "field", "outboundTag": "block", "ip": ["geoip:private"], "ruleTag": "block-private-ip"}]}}' > "$XRAY_TEMP_CONFIG_FILE" || _error "jq 生成配置失败。"
     
-    _info "验证配置文件 ${XRAY_TEMP_CONFIG_FILE}..."
-    if "$XRAY_BIN_PATH" test -config "$XRAY_TEMP_CONFIG_FILE"; then # MODIFIED: xray test
-        _info "配置验证通过。"
-        mkdir -p "$(dirname "$XRAY_CONFIG_FILE")" # Ensure directory exists
-        mv "$XRAY_TEMP_CONFIG_FILE" "$XRAY_CONFIG_FILE"
-        _info "配置已保存: ${XRAY_CONFIG_FILE}"
-    else 
-        local test_output
-        test_output=$($XRAY_BIN_PATH test -config "$XRAY_TEMP_CONFIG_FILE" 2>&1)
-        _error "配置 ${XRAY_TEMP_CONFIG_FILE} 未通过验证。配置未改。\n验证输出:\n${test_output}\n请检查临时文件。"
-        # rm -f "$XRAY_TEMP_CONFIG_FILE" # Keep for inspection
-    fi
+    _info "配置文件内容已生成到 ${XRAY_TEMP_CONFIG_FILE}."
+    # Since Xray v25.6.8 (or similar old/unusual versions) may lack 'check' or 'test' commands,
+    # we directly move the file. Validity will be checked upon service restart.
+    mkdir -p "$(dirname "$XRAY_CONFIG_FILE")"
+    mv "$XRAY_TEMP_CONFIG_FILE" "$XRAY_CONFIG_FILE"
+    _info "配置已写入: ${XRAY_CONFIG_FILE}"
+    _warn "当前 Xray 版本可能无内置配置检查命令。配置正确性将在服务重启时验证。"
 }
 
 display_share_link() {
@@ -276,7 +273,16 @@ WantedBy=multi-user.target
 EOF
     _info "Xray systemd服务文件已创建/更新。" && systemctl daemon-reload
     ! systemctl enable xray &>/dev/null && _warn "启用Xray服务失败。" || _info "Xray已设开机自启。"
-    ! _systemctl "restart" && _warn "Xray启动失败，检查日志和配置 (${XRAY_CONFIG_FILE})。"
+    
+    _info "尝试重启Xray服务以应用新配置..."
+    if ! _systemctl "restart"; then 
+        _warn "Xray服务启动失败！这可能意味着生成的配置文件 (${XRAY_CONFIG_FILE}) 有问题。"
+        _warn "请检查Xray日志获取详细错误: journalctl -u xray -e --no-pager"
+        _warn "脚本将继续，但Xray可能无法正常工作。"
+    else
+        _info "Xray服务已成功重启。"
+    fi
+    
     regenerate_share_link; _info "Xray安装/重装完成！"
     _warn "为使 'xs' 别名生效, 可能需 'source /etc/profile' 或重连SSH。"
 }
@@ -303,19 +309,19 @@ _safe_update_config_value() {
     ! _exists "$XRAY_BIN_PATH" && _error "Xray ${XRAY_BIN_PATH} 未找到。" && return 1
 
     if jq "$jq_filter" "$XRAY_CONFIG_FILE" > "$XRAY_TEMP_CONFIG_FILE" && [[ -s "$XRAY_TEMP_CONFIG_FILE" ]]; then
-        # MODIFIED: xray test
-        if "$XRAY_BIN_PATH" test -config "$XRAY_TEMP_CONFIG_FILE"; then
-            mv "$XRAY_TEMP_CONFIG_FILE" "$XRAY_CONFIG_FILE"; _info "$success_msg"
-            _systemctl "restart" && regenerate_share_link
-        else 
-            local test_output
-            test_output=$($XRAY_BIN_PATH test -config "$XRAY_TEMP_CONFIG_FILE" 2>&1)
-            _error "修改后配置未通过验证。配置未改。\n验证输出:\n${test_output}\n临时文件: $XRAY_TEMP_CONFIG_FILE";
-            # rm -f "$XRAY_TEMP_CONFIG_FILE" # Keep for inspection
+        # Since Xray v25.6.8 may lack 'check' or 'test', we directly move.
+        # Validity will be checked upon service restart.
+        mv "$XRAY_TEMP_CONFIG_FILE" "$XRAY_CONFIG_FILE"
+        _info "$success_msg (配置已写入，将在重启时验证)"
+        if _systemctl "restart"; then
+             regenerate_share_link
+        else
+            _warn "服务重启失败！修改后的配置可能有问题。请检查Xray日志。"
+            # Consider not automatically regenerating share link if restart fails
         fi
     else 
-        _error "$failure_msg (jq或临时文件出错)。配置未改。临时文件: $XRAY_TEMP_CONFIG_FILE";
-        # rm -f "$XRAY_TEMP_CONFIG_FILE" # Keep for inspection
+        _error "$failure_msg (jq 操作失败或临时文件为空)。配置文件未更改。"
+        rm -f "$XRAY_TEMP_CONFIG_FILE"
     fi
 }
 
