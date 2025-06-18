@@ -1,4 +1,4 @@
-# Version: 4.3.4 (Final Polished & Optimized)Add commentMore actions
+# Version: 4.3.5 (Final Polished & Optimized)Add commentMore actions
 # Author: wuyou0789 & AI Assistant
 # Author: wuyou0789
 # GitHub: https://github.com/wuyou0789/InstallationScript
@@ -50,6 +50,14 @@ _os_check() {
     _info "检测到兼容的操作系统: $(lsb_release -ds)"
 }
 
+_wait_for_apt_lock() {More actions
+    local max_wait_seconds=300; local start_time; start_time=$(date +%s)
+    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1; do
+        local current_time; current_time=$(date +%s)
+        if (( current_time - start_time > max_wait_seconds )); then _error "等待 dpkg 锁超时 (> ${max_wait_seconds} 秒)。"; fi
+        _warn "等待其他软件包管理器进程释放锁... (已等待 $((current_time - start_time)) 秒)"; sleep 5
+    done
+}
 _install_pkgs() {
     _info "正在更新软件包列表...";
     apt-get update || _warn "apt-get update 失败，但仍将尝试安装。"
