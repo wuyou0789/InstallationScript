@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 
 #================================================================================
-# Nginx WebDAV Ultimate Script (AWUS) - Custom Build Edition
+# Nginx WebDAV Ultimate Script (AWUS) - Final Production Release
 #
-# Version: 4.2.5 (Final Polished & Optimized)
-# Author: wuyou0789
+# Version: 4.3.0
+# Author: wuyou0789 & AI Assistant
 # GitHub: https://github.com/wuyou0789/InstallationScript
 # License: MIT
 #
 # INVOCATION: This script MUST be run with root privileges.
-#             e.g., sudo ./install.sh install
+#             e.g., sudo ./awus.sh install OR as root user: ./awus.sh install
 #================================================================================
 
 # --- Strict Mode & Environment ---
@@ -17,7 +17,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 # --- Global Constants ---
-readonly SCRIPT_VERSION="4.2.4-nginx-final"
+readonly SCRIPT_VERSION="4.3.0-nginx-final"
 readonly RED='\033[1;31m'
 readonly GREEN='\033[1;32m'
 readonly YELLOW='\033[1;33m'
@@ -26,12 +26,12 @@ readonly NC='\033[0m'
 
 # --- Configuration Paths ---
 readonly SCRIPT_INSTALL_DIR="/usr/local/etc/awus-script"
-readonly SCRIPT_SELF_PATH="${SCRIPT_INSTALL_DIR}/install.sh"
+readonly SCRIPT_SELF_PATH="${SCRIPT_INSTALL_DIR}/awus.sh"
 readonly CONFIG_FILE="${SCRIPT_INSTALL_DIR}/config.conf"
 readonly DEFAULT_NGINX_PASSWD_FILE="/etc/nginx/webdav.passwd"
 readonly ALIAS_FILE="/etc/profile.d/awus-alias.sh"
 readonly LOCK_FILE="/var/tmp/awus.lock"
-readonly CERTBOT_CMD="/usr/bin/certbot" 
+readonly CERTBOT_CMD="/usr/bin/certbot"
 
 # --- Logging and Status Functions ---
 _info() { printf "${GREEN}[信息] %s${NC}\n" "$*"; }
@@ -39,7 +39,7 @@ _warn() { printf "${YELLOW}[警告] %s${NC}\n" "$*"; }
 _error() { printf "${RED}[错误] %s${NC}\n" "$*"; exit 1; }
 
 # --- Prerequisite and Utility Functions ---
-check_root() { if [[ $EUID -ne 0 ]]; then _error "此脚本必须以 root 权限运行。请使用 'sudo ./install.sh'。"; fi; }
+check_root() { if [[ $EUID -ne 0 ]]; then _error "此脚本必须以 root 权限运行。请使用 'sudo' 或以 root 用户身份登录。"; fi; }
 _exists() { command -v "$1" >/dev/null 2>&1; }
 
 _os_check() {
@@ -54,15 +54,23 @@ _os_check() {
     _info "检测到兼容的操作系统: $(lsb_release -ds)"
 }
 
+_wait_for_apt_lock() {
+    local max_wait_seconds=300; local start_time; start_time=$(date +%s)
+    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1; do
+        local current_time; current_time=$(date +%s)
+        if (( current_time - start_time > max_wait_seconds )); then _error "等待 dpkg 锁超时 (> ${max_wait_seconds} 秒)。"; fi
+        _warn "等待其他软件包管理器进程释放锁... (已等待 $((current_time - start_time)) 秒)"; sleep 5
+    done
+}
+
 _install_pkgs() {
-    _info "正在更新软件包列表...";
+    _wait_for_apt_lock; _info "正在更新软件包列表...";
     apt-get update || _warn "apt-get update 失败，但仍将尝试安装。"
-    _info "正在安装软件包: $*"
-    apt-get install -y "$@" || _error "软件包安装失败: $*。"
+    _info "正在安装软件包: $*"; apt-get install -y "$@" || _error "软件包安装失败: $*。"
 }
 
 _nginx_ctl() {
-    local action="$1"; _info "正在 ${action} Nginx 服务..."
+    local action="$1"; _info "正在 ${action} Nginx 服务...";
     if ! systemctl "${action}" nginx; then _error "执行 systemctl ${action} nginx 失败。"; fi
     sleep 1
     if [[ "$action" == "start" || "$action" == "restart" ]]; then
@@ -71,12 +79,13 @@ _nginx_ctl() {
     _info "Nginx 服务 ${action} 完成。"
 }
 
+# --- Core Installation & Management Functions ---
 load_config() { if [ -f "$CONFIG_FILE" ]; then source "$CONFIG_FILE"; fi; }
 
 setup_script_invocation() {
     _info "正在安装脚本以供后续使用..."; mkdir -p "$SCRIPT_INSTALL_DIR"; cp -f "$0" "$SCRIPT_SELF_PATH"; chmod +x "$SCRIPT_SELF_PATH"
     echo "alias webdav='bash ${SCRIPT_SELF_PATH}'" > "$ALIAS_FILE"
-    _info "别名 'webdav' 已创建。请运行 'source ${ALIAS_FILE}' 或重新登录以使用。Zsh 用户可能需添加到 .zshrc。"
+    _info "别名 'webdav' 已创建。请运行 'source ${ALIAS_FILE}' 或重新登录以使用。"
 }
 
 setup_systemd_service() {
@@ -85,7 +94,6 @@ setup_systemd_service() {
     cat <<EOF_SYSTEMD | tee "${service_file_path}" > /dev/null
 [Unit]
 Description=A high performance web server and a reverse proxy server
-Documentation=man:nginx(8)
 After=network.target
 [Service]
 Type=forking
@@ -106,12 +114,13 @@ install_dependencies() {
     _info "正在检查并安装基础依赖...";
     local pkgs_to_install=""; ! _exists "curl" && pkgs_to_install+="curl "; ! _exists "htpasswd" && pkgs_to_install+="apache2-utils ";
     if [[ -n "$pkgs_to_install" ]]; then _install_pkgs $pkgs_to_install; fi
+
     _info "正在检查并安装 Certbot...";
-    if ! _exists "${CERTBOT_CMD}" || ! [[ $(readlink -f "${CERTBOT_CMD}") == *"/snap/"* ]]; then
+    if ! _exists "${CERTBOT_CMD}" || ! [[ $(readlink -f "${CERTBOT_CMD}" 2>/dev/null) == *"/snap/"* ]]; then
         if ! _exists "certbot"; then _info "未找到 Certbot。将使用 Snap 进行安装..."; else _warn "检测到不推荐的 Certbot 版本。将自动替换为 Snap 版本..."; fi
         if ! _exists "snapd"; then _install_pkgs "snapd"; fi;
         if ! snap list core &>/dev/null; then snap install core; fi; snap refresh core
-        if dpkg -s certbot &>/dev/null; then apt-get remove -y certbot* &>/dev/null; fi
+        if dpkg -s certbot &>/dev/null; then _wait_for_apt_lock; apt-get remove -y certbot* &>/dev/null; fi
         snap install --classic certbot || _error "通过 snap 安装 Certbot 失败。"
         if [ -f /usr/bin/certbot ] && [ ! -L /usr/bin/certbot ]; then rm -f /usr/bin/certbot; fi
         ln -sf /snap/bin/certbot /usr/bin/certbot || _warn "创建 certbot 符号链接失败。"
@@ -121,77 +130,42 @@ install_dependencies() {
 
 install_custom_nginx() {
     _info "正在安装定制版 Nginx...";
-    # Check if our custom package is already installed.
     if dpkg -s nginx-custom-webdav &>/dev/null; then
         _info "检测到已安装的定制版 Nginx。"
-        # Even if installed, ensure the systemd service is set up, as it's a critical part of our setup.
-        if [ ! -f "/etc/systemd/system/nginx.service" ]; then
-             _warn "但 systemd 服务文件缺失，正在尝试创建..."
-             setup_systemd_service
-        else
-            _info "systemd 服务文件已存在。跳过 Nginx 安装。"
-        fi
+        if [ ! -f "/etc/systemd/system/nginx.service" ]; then _warn "但 systemd 服务文件缺失，正在创建..."; setup_systemd_service; fi
         return
     fi
-    
-    # --- Auto-detect architecture and select the correct .deb package ---
     local arch; arch=$(dpkg --print-architecture)
-    _info "检测到系统架构为: ${arch}"
-
-    local deb_url=""
+    local deb_filename=""
     if [[ "$arch" == "amd64" ]]; then
-        _info "为 amd64 架构选择软件包..."
-        # This is the URL for the amd64 package you compiled earlier.
-        # Please ensure the release tag 'v2.0.0-nginx-custom' is correct.
-        deb_url="https://github.com/wuyou0789/InstallationScript/releases/download/v2.0.0-nginx-custom/nginx-custom-webdav_1.28.0-1_amd64.deb"
+        deb_filename="nginx-custom-webdav_1.28.0-1_amd64.deb"
     elif [[ "$arch" == "arm64" || "$arch" == "aarch64" ]]; then
-        _info "为 arm64/aarch64 架构选择软件包..."
-        # --- **This is the new, correct URL for your arm64 package** ---
-        deb_url="https://github.com/wuyou0789/InstallationScript/releases/download/arm64/nginx-custom-webdav_1.28.0-1_arm64.deb"
+        deb_filename="nginx-custom-webdav_1.28.0-1_arm64.deb"
     else
-        _error "不支持的系统架构: ${arch}。本脚本只支持 amd64 和 arm64。"
+        _error "不支持的系统架构: ${arch}。"
     fi
+    local release_tag="nginx-custom-webdav"
+    local deb_url="https://github.com/wuyou0789/InstallationScript/releases/download/${release_tag}/${deb_filename}"
+    local deb_path="/tmp/${deb_filename}"; _info "正在从 GitHub 下载 [${arch}] 版本的 Nginx 包...";
+    if ! curl -L --fail -o "${deb_path}" "${deb_url}"; then _error "下载定制 Nginx 包失败！请检查 URL。"; fi
     
-    local deb_path="/tmp/nginx-custom-webdav.deb"
-    _info "正在从 GitHub 下载 [${arch}] 版本的 Nginx 包...";
-    if ! curl -L --fail -o "${deb_path}" "${deb_url}"; then
-        _error "下载定制 Nginx 包失败！请检查您在脚本中配置的 URL 是否正确，以及 GitHub Release 是否发布。"
-    fi
-    
-    _info "正在卸载任何可能冲突的官方 Nginx...";
-    systemctl stop nginx &>/dev/null || true
-    apt-get purge -y nginx nginx-common &>/dev/null || true
+    _info "正在卸载任何可能冲突的官方 Nginx..."; systemctl stop nginx &>/dev/null || true
+    _wait_for_apt_lock; apt-get purge -y nginx nginx-common &>/dev/null || true
     
     _info "正在安装定制的 Nginx 包...";
-    _wait_for_apt_lock # Ensure no other package manager is running
-    if ! dpkg -i "${deb_path}"; then
-        _warn "dpkg 安装失败，正在尝试自动修复依赖 (-f)...";
-        _wait_for_apt_lock; apt-get install -f -y || _error "自动修复依赖失败！";
-    fi
-    rm -f "${deb_path}"; _info "定制版 Nginx 安装成功！"
-    
-    # This step is crucial after installing from a custom .deb package
-    setup_systemd_service
+    _wait_for_apt_lock
+    if ! dpkg -i "${deb_path}"; then _warn "dpkg 安装失败，正在尝试自动修复依赖 (-f)..."; _wait_for_apt_lock; apt-get install -f -y || _error "自动修复依赖失败！"; fi
+    rm -f "${deb_path}"; _info "定制版 Nginx 安装成功！"; setup_systemd_service
 }
 
 do_install() {
-    local DOMAIN_NAME WEBDEV_DIR NGINX_PASSWD_FILE ADMIN_USER ADMIN_PASS
-    local nginx_vhost_path temp_nginx_vhost_path nginx_main_conf="/etc/nginx/nginx.conf"
-    
+    local DOMAIN_NAME WEBDEV_DIR NGINX_PASSWD_FILE ADMIN_USER
     trap 'install_cleanup' ERR
 
     install_cleanup() {
-        _warn "\n--- 安装过程中发生错误，正在执行自动清理... ---";
-        systemctl stop nginx &>/dev/null || true 
-        # Restore nginx.conf from backup if one was made and script is aborting
-        if [ -f "${nginx_main_conf}.awus.bak" ]; then
-            _warn "正在从备份恢复 ${nginx_main_conf}..."
-            mv "${nginx_main_conf}.awus.bak" "${nginx_main_conf}" || _warn "恢复 nginx.conf 失败。"
-        fi
+        _warn "\n--- 安装过程中发生错误，正在执行自动清理... ---"; _nginx_ctl "stop" &>/dev/null || true
         if [ -n "${DOMAIN_NAME:-}" ]; then
-            _warn "移除为 ${DOMAIN_NAME} 创建的 Nginx 配置...";
-            rm -f "/etc/nginx/sites-enabled/${DOMAIN_NAME}" "/etc/nginx/sites-available/${DOMAIN_NAME}"
-            if [ -n "${temp_nginx_vhost_path:-}" ]; then rm -f "/etc/nginx/sites-enabled/$(basename "$temp_nginx_vhost_path")" "$temp_nginx_vhost_path"; fi
+            _warn "移除为 ${DOMAIN_NAME} 创建的 Nginx 配置..."; rm -f "/etc/nginx/sites-enabled/${DOMAIN_NAME}" "/etc/nginx/sites-available/${DOMAIN_NAME}"
             if _exists "${CERTBOT_CMD}" && [ -d "/etc/letsencrypt/live/${DOMAIN_NAME}" ]; then _warn "删除为 ${DOMAIN_NAME} 创建的 SSL 证书..."; "${CERTBOT_CMD}" delete --cert-name "$DOMAIN_NAME" --non-interactive; fi
         fi
         _info "--- 清理完成 ---"
@@ -209,88 +183,58 @@ do_install() {
     local ADMIN_PASS; while true; do read -r -s -p "为 ${ADMIN_USER} 设置密码: " ADMIN_PASS; echo; read -r -s -p "确认密码: " confirm_pass; echo; if [[ "$ADMIN_PASS" == "$confirm_pass" && -n "$ADMIN_PASS" ]]; then break; else _warn "密码为空或不匹配。"; fi; done
 
     _info "正在准备 Nginx 配置文件...";
-    # --- **CRITICAL FIX: Create a brand new, minimal nginx.conf** ---
-    _info "正在创建全新的 Nginx 主配置文件 (${nginx_main_conf})..."
-    if [ -f "${nginx_main_conf}" ]; then
-        mv "${nginx_main_conf}" "${nginx_main_conf}.awus.bak"
-        _info "现有的 ${nginx_main_conf} 已备份到 ${nginx_main_conf}.awus.bak"
-    fi
-    cat <<EOF_NGINX_CONF | tee "${nginx_main_conf}" > /dev/null
+    mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/nginx/conf.d /var/log/nginx /var/cache/nginx/client_temp
+    if [ ! -f /etc/nginx/nginx.conf ]; then
+        _warn "/etc/nginx/nginx.conf 不存在，正在创建一个最小化版本..."
+        cat <<EOF_NGINX_CONF | tee "/etc/nginx/nginx.conf" > /dev/null
 user www-data;
 worker_processes auto;
 pid /var/run/nginx.pid;
-# include /etc/nginx/modules-enabled/*.conf; # Optional, if your custom build uses it
-
-events {
-    worker_connections 768;
-    # multi_accept on;
-}
-
+events { worker_connections 768; }
 http {
-    sendfile on;
-    tcp_nopush on;
-    tcp_nodelay on;
-    keepalive_timeout 65;
-    types_hash_max_size 2048;
-    server_tokens off;
-
-    include /etc/nginx/mime.types;
-    default_type application/octet-stream;
-
-    access_log /var/log/nginx/access.log;
-    error_log /var/log/nginx/error.log;
-
-    # gzip on;
-    # gzip_disable "msie6";
-    # ... other gzip settings if needed ...
-
+    sendfile on; tcp_nopush on; tcp_nodelay on; keepalive_timeout 65;
+    types_hash_max_size 2048; server_tokens off;
+    include /etc/nginx/mime.types; default_type application/octet-stream;
+    access_log /var/log/nginx/access.log; error_log /var/log/nginx/error.log;
     dav_ext_lock_zone zone=webdav:10m;
-
-    include /etc/nginx/conf.d/*.conf;
-    include /etc/nginx/sites-enabled/*;
+    include /etc/nginx/conf.d/*.conf; include /etc/nginx/sites-enabled/*;
 }
 EOF_NGINX_CONF
-    _info "全新的 ${nginx_main_conf} 创建成功。"
-    # --- **END CRITICAL FIX** ---
+    elif ! grep -q 'dav_ext_lock_zone' /etc/nginx/nginx.conf; then
+        sed -i '/^[[:space:]]*http[[:space:]]*{/a \    dav_ext_lock_zone zone=webdav:10m;' /etc/nginx/nginx.conf
+    fi
     
-    mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/nginx/conf.d /var/log/nginx "/var/cache/nginx/client_temp"
-        
-    temp_nginx_vhost_path="/etc/nginx/sites-available/${DOMAIN_NAME}.certbot-setup.conf"
-    cat <<EOF_VHOST_TEMP | tee "${temp_nginx_vhost_path}" > /dev/null
+    local nginx_vhost_path="/etc/nginx/sites-available/${DOMAIN_NAME}";
+    cat <<EOF_VHOST | tee "${nginx_vhost_path}" > /dev/null
 server { listen 80; server_name ${DOMAIN_NAME}; root /var/www/html; location /.well-known/acme-challenge/ { allow all; } location / { return 404; }}
-EOF_VHOST_TEMP
+EOF_VHOST
 
     _info "正在执行系统配置...";
     mkdir -p "${WEBDEV_DIR}" && chown www-data:www-data "${WEBDEV_DIR}" && chmod 775 "${WEBDEV_DIR}"
     touch "${NGINX_PASSWD_FILE}" && chown root:www-data "${NGINX_PASSWD_FILE}" && chmod 640 "${NGINX_PASSWD_FILE}"
     htpasswd -cb "${NGINX_PASSWD_FILE}" "${ADMIN_USER}" "${ADMIN_PASS}" || _error "创建管理员用户失败。"
 
-    _info "正在启用临时站点并重启 Nginx (为 Certbot 做准备)...";
-    rm -f /etc/nginx/sites-enabled/default || true
-    rm -f "/etc/nginx/sites-enabled/${DOMAIN_NAME}" || true 
-    ln -sf "$temp_nginx_vhost_path" "/etc/nginx/sites-enabled/"
+    _info "正在启用新站点并重启 Nginx (为 Certbot 做准备)...";
+    _warn "脚本将禁用 Nginx 默认站点..."; read -r -p "按 Enter 继续...";
+    ln -sf "$nginx_vhost_path" "/etc/nginx/sites-enabled/"; rm -f /etc/nginx/sites-enabled/default || true
+    nginx -t || _error "Nginx 初始配置测试失败。"; _nginx_ctl "restart"
     
-    nginx -t || _error "Nginx 临时配置测试失败。"; 
-    _nginx_ctl "restart" || _error "Nginx 初始重启失败。"
-    
-    _info "正在处理 SSL 证书...";
-    local cert_email email_option cert_command_array=("${CERTBOT_CMD}" "certonly" "--non-interactive" "--agree-tos" "--nginx" "-d" "${DOMAIN_NAME}")
+    local cert_email email_option certbot_cmd_array=("${CERTBOT_CMD}" "certonly" "--non-interactive" "--agree-tos" "--nginx" "-d" "${DOMAIN_NAME}")
     read -r -p "请输入用于 Let's Encrypt 的邮箱 (推荐): " cert_email
-    if [[ -n "$cert_email" ]]; then cert_command_array+=("--email" "${cert_email}"); else _warn "未提供邮箱！"; cert_command_array+=("--register-unsafely-without-email"); fi
+    if [[ -n "$cert_email" ]]; then certbot_cmd_array+=("--email" "${cert_email}"); else _warn "未提供邮箱！"; certbot_cmd_array+=("--register-unsafely-without-email"); fi
 
     if [ -d "/etc/letsencrypt/live/${DOMAIN_NAME}" ]; then
         _warn "检测到 ${DOMAIN_NAME} 的证书已存在。"; read -r -p "[1] 更新现有 [2] 强制重申 [0] 中止: " cert_choice
         case "$cert_choice" in
-            1) _info "尝试更新现有证书..."; local update_cmd=("${cert_command_array[@]}" "--keep-until-expiring"); "${update_cmd[@]}" || _error "Certbot (更新现有) 失败。";;
-            2) _info "强制重新申请证书..."; local renew_cmd=("${cert_command_array[@]}" "--force-renewal"); "${renew_cmd[@]}" || _error "Certbot (强制重新申请) 失败。";;
+            1) _info "尝试更新现有证书..."; local update_cmd=("${certbot_cmd_array[@]}" "--keep-until-expiring"); "${update_cmd[@]}" || _error "Certbot (更新现有) 失败。";;
+            2) _info "强制重新申请证书..."; local renew_cmd=("${certbot_cmd_array[@]}" "--force-renewal"); "${renew_cmd[@]}" || _error "Certbot (强制重新申请) 失败。";;
             *) _error "操作中止。";;
         esac
     else
-        _info "正在申请新的 SSL 证书..."; "${cert_command_array[@]}" || _error "Certbot (首次申请) 失败。"
+        _info "正在申请新的 SSL 证书..."; "${certbot_cmd_array[@]}" || _error "Certbot (首次申请) 失败。"
     fi
     
-    _info "SSL 证书已处理。正在生成最终的 Nginx 配置文件..."
-    nginx_vhost_path="/etc/nginx/sites-available/${DOMAIN_NAME}" # This is our final config file
+    _info "SSL 证书已获取/确认。正在生成最终的 Nginx 配置文件..."
     cat <<EOF_VHOST_FINAL | tee "${nginx_vhost_path}" > /dev/null
 server {
     listen 80; listen [::]:80; server_name ${DOMAIN_NAME};
@@ -298,15 +242,12 @@ server {
     location / { return 301 https://\$server_name\$request_uri; }
 }
 server {
-    listen 443 ssl http2; listen [::]:443 ssl http2; # Corrected based on nginx -t warning
+    listen 443 ssl http2; listen [::]:443 ssl http2;
     server_name ${DOMAIN_NAME};
     root ${WEBDEV_DIR};
 
-    access_log /var/log/nginx/${DOMAIN_NAME}.access.log;
-    error_log /var/log/nginx/${DOMAIN_NAME}.error.log warn;
-
+    access_log /var/log/nginx/${DOMAIN_NAME}.access.log; error_log /var/log/nginx/${DOMAIN_NAME}.error.log warn;
     client_max_body_size 0; charset utf-8;
-    
     location ~ /\.(_.*|DS_Store|thumbs\.db)$ { return 403; }
 
     location / {
@@ -317,18 +258,12 @@ server {
         create_full_put_path on; autoindex on; dav_ext_lock zone=webdav;
         more_set_headers "DAV: 1, 2";
     }
-
     ssl_certificate /etc/letsencrypt/live/${DOMAIN_NAME}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${DOMAIN_NAME}/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 }
 EOF_VHOST_FINAL
-
-    _info "正在启用最终站点配置并移除临时配置...";
-    rm -f "/etc/nginx/sites-enabled/$(basename "$temp_nginx_vhost_path")" || true
-    rm -f "$temp_nginx_vhost_path" || true
-    ln -sf "$nginx_vhost_path" "/etc/nginx/sites-enabled/"
 
     _info "最终测试并重启 Nginx..."; nginx -t || _error "最终配置测试失败！"; _nginx_ctl "restart"
     
@@ -339,7 +274,6 @@ EOF_VHOST_FINAL
     { echo "AWUS_DOMAIN_NAME=\"${DOMAIN_NAME}\""; echo "AWUS_WEBDEV_DIR=\"${WEBDEV_DIR}\""; echo "AWUS_NGINX_PASSWD_FILE=\"${NGINX_PASSWD_FILE}\""; } > "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"; setup_script_invocation
 }
-
 
 do_status() {
     load_config; _info "--- Nginx WebDAV 服务状态 ---"
@@ -395,7 +329,6 @@ do_uninstall() {
             read -r -p "$(echo -e ${YELLOW}"确定要移除 AWUS 脚本和 Nginx 站点配置吗? (y/n): "${NC})" confirm
             if [[ "$confirm" =~ ^[Yy] ]]; then
                 if [ -n "${AWUS_DOMAIN_NAME:-}" ]; then rm -f "/etc/nginx/sites-enabled/${AWUS_DOMAIN_NAME}" "/etc/nginx/sites-available/${AWUS_DOMAIN_NAME}"; fi
-                # No separate permissions map file in this simplified version
                 rm -f "$SCRIPT_SELF_PATH" "$CONFIG_FILE" "$ALIAS_FILE"
                 _info "AWUS 配置已移除。建议运行 'nginx -t && systemctl reload nginx'。"
             fi;;
@@ -406,6 +339,7 @@ do_uninstall() {
                 rm -f "$SCRIPT_SELF_PATH" "$CONFIG_FILE" "$ALIAS_FILE"
                 _nginx_ctl "stop" && systemctl disable nginx &>/dev/null || true
                 _info "正在使用 'apt-get purge' 彻底卸载 Nginx...";
+                _wait_for_apt_lock
                 apt-get purge -y nginx-custom-webdav && apt-get autoremove -y
                 rm -rf /etc/nginx; _info "Nginx 已卸载。"
                 _warn "WebDAV 数据 (${AWUS_WEBDEV_DIR:-}) 和 SSL 证书 (${AWUS_DOMAIN_NAME:-}) 未被删除。"
@@ -453,7 +387,8 @@ ${GREEN}0.${NC} 退出脚本
 
 # --- Script Entry Point ---
 main() {
-    check_root # Ensure script is run with root privileges
+    # It requires root privileges.
+    check_root
     (
         flock -n 200 || _error "另一个脚本实例正在运行。请等待其完成后再试。"
         
@@ -461,11 +396,11 @@ main() {
         
         case "${1:-}" in
             install)
-                # No need for confirmation here if called directly with 'install'
                 do_install
                 exit 0
                 ;;
             ""|menu) # No arguments, or 'menu' explicitly called
+                _os_check # Check OS when entering menu or first-time install prompt
                 if [[ -f "$CONFIG_FILE" ]]; then # If config file exists, assume installed
                     while true; do main_menu; done
                 else
@@ -475,16 +410,19 @@ main() {
                 fi
                 exit 0;;
             status|uninstall)
+                _os_check
                 if [ ! -f "$CONFIG_FILE" ]; then _error "AWUS 未安装。请先运行 'install'。"; fi
                 "do_$1"
                 exit 0
                 ;;
             start|stop|restart)
+                _os_check
                 if [ ! -f "$CONFIG_FILE" ]; then _error "AWUS 未安装。"; fi
                 "_nginx_ctl" "$1"
                 exit 0
                 ;;
             accounts)
+                _os_check
                 if [ ! -f "$CONFIG_FILE" ]; then _error "AWUS 未安装。"; fi
                 shift; do_accounts_manage "$@"
                 exit 0
