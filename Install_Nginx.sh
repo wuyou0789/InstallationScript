@@ -121,19 +121,57 @@ install_dependencies() {
 
 install_custom_nginx() {
     _info "正在安装定制版 Nginx...";
+    # Check if our custom package is already installed.
     if dpkg -s nginx-custom-webdav &>/dev/null; then
         _info "检测到已安装的定制版 Nginx。"
-        if [ ! -f "/etc/systemd/system/nginx.service" ]; then _warn "但 systemd 服务文件缺失，正在创建..."; setup_systemd_service; fi
+        # Even if installed, ensure the systemd service is set up, as it's a critical part of our setup.
+        if [ ! -f "/etc/systemd/system/nginx.service" ]; then
+             _warn "但 systemd 服务文件缺失，正在尝试创建..."
+             setup_systemd_service
+        else
+            _info "systemd 服务文件已存在。跳过 Nginx 安装。"
+        fi
         return
     fi
-    local deb_url="https://github.com/wuyou0789/InstallationScript/releases/download/nginx-custom-webdav/nginx-custom-webdav_1.28.0-1_amd64.deb"
-    local deb_path="/tmp/nginx-custom-webdav.deb"; _info "正在从 GitHub 下载定制的 Nginx 包...";
-    if ! curl -L --fail -o "${deb_path}" "${deb_url}"; then _error "下载定制 Nginx 包失败！请检查脚本中的 URL。"; fi
-    _info "正在卸载任何可能冲突的官方 Nginx..."; systemctl stop nginx &>/dev/null || true
+    
+    # --- Auto-detect architecture and select the correct .deb package ---
+    local arch; arch=$(dpkg --print-architecture)
+    _info "检测到系统架构为: ${arch}"
+
+    local deb_url=""
+    if [[ "$arch" == "amd64" ]]; then
+        _info "为 amd64 架构选择软件包..."
+        # This is the URL for the amd64 package you compiled earlier.
+        # Please ensure the release tag 'v2.0.0-nginx-custom' is correct.
+        deb_url="https://github.com/wuyou0789/InstallationScript/releases/download/v2.0.0-nginx-custom/nginx-custom-webdav_1.28.0-1_amd64.deb"
+    elif [[ "$arch" == "arm64" || "$arch" == "aarch64" ]]; then
+        _info "为 arm64/aarch64 架构选择软件包..."
+        # --- **This is the new, correct URL for your arm64 package** ---
+        deb_url="https://github.com/wuyou0789/InstallationScript/releases/download/arm64/nginx-custom-webdav_1.28.0-1_arm64.deb"
+    else
+        _error "不支持的系统架构: ${arch}。本脚本只支持 amd64 和 arm64。"
+    fi
+    
+    local deb_path="/tmp/nginx-custom-webdav.deb"
+    _info "正在从 GitHub 下载 [${arch}] 版本的 Nginx 包...";
+    if ! curl -L --fail -o "${deb_path}" "${deb_url}"; then
+        _error "下载定制 Nginx 包失败！请检查您在脚本中配置的 URL 是否正确，以及 GitHub Release 是否发布。"
+    fi
+    
+    _info "正在卸载任何可能冲突的官方 Nginx...";
+    systemctl stop nginx &>/dev/null || true
     apt-get purge -y nginx nginx-common &>/dev/null || true
+    
     _info "正在安装定制的 Nginx 包...";
-    if ! dpkg -i "${deb_path}"; then _warn "dpkg 安装失败，正在尝试自动修复依赖 (-f)..."; apt-get install -f -y || _error "自动修复依赖失败！"; fi
-    rm -f "${deb_path}"; _info "定制版 Nginx 安装成功！"; setup_systemd_service
+    _wait_for_apt_lock # Ensure no other package manager is running
+    if ! dpkg -i "${deb_path}"; then
+        _warn "dpkg 安装失败，正在尝试自动修复依赖 (-f)...";
+        _wait_for_apt_lock; apt-get install -f -y || _error "自动修复依赖失败！";
+    fi
+    rm -f "${deb_path}"; _info "定制版 Nginx 安装成功！"
+    
+    # This step is crucial after installing from a custom .deb package
+    setup_systemd_service
 }
 
 do_install() {
