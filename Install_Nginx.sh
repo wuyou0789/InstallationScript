@@ -3,7 +3,7 @@
 #================================================================================
 # Nginx WebDAV Ultimate Script (AWUS) - Final Production Release
 #
-# Version: 4.3.1
+# Version: 4.3.2
 # Author: wuyou0789 & AI Assistant
 # GitHub: https://github.com/wuyou0789/InstallationScript
 # License: MIT
@@ -135,7 +135,10 @@ install_custom_nginx() {
         if [ ! -f "/etc/systemd/system/nginx.service" ]; then _warn "但 systemd 服务文件缺失，正在创建..."; setup_systemd_service; fi
         return
     fi
+    
     local arch; arch=$(dpkg --print-architecture)
+    _info "检测到系统架构为: ${arch}"
+
     local deb_filename=""
     if [[ "$arch" == "amd64" ]]; then
         deb_filename="nginx-custom-webdav_1.28.0-1_amd64.deb"
@@ -144,18 +147,30 @@ install_custom_nginx() {
     else
         _error "不支持的系统架构: ${arch}。"
     fi
-    local release_tag="nginx-custom-webdav"
+    
+    local release_tag="nginx-custom-webdav" # 您的 GitHub Release 标签
     local deb_url="https://github.com/wuyou0789/InstallationScript/releases/download/${release_tag}/${deb_filename}"
     local deb_path="/tmp/${deb_filename}"; _info "正在从 GitHub 下载 [${arch}] 版本的 Nginx 包...";
-    if ! curl -L --fail -o "${deb_path}" "${deb_url}"; then _error "下载定制 Nginx 包失败！请检查 URL。"; fi
+    if ! curl -L --fail -o "${deb_path}" "${deb_url}"; then _error "下载定制 Nginx 包失败！请检查脚本中的 URL。"; fi
     
     _info "正在卸载任何可能冲突的官方 Nginx..."; systemctl stop nginx &>/dev/null || true
-    _wait_for_apt_lock; apt-get purge -y nginx nginx-common &>/dev/null || true
+    apt-get purge -y nginx nginx-common &>/dev/null || true
     
     _info "正在安装定制的 Nginx 包...";
     _wait_for_apt_lock
-    if ! dpkg -i "${deb_path}"; then _warn "dpkg 安装失败，正在尝试自动修复依赖 (-f)..."; _wait_for_apt_lock; apt-get install -f -y || _error "自动修复依赖失败！"; fi
-    rm -f "${deb_path}"; _info "定制版 Nginx 安装成功！"; setup_systemd_service
+    if ! dpkg -i "${deb_path}"; then
+        _warn "dpkg 安装失败，正在尝试自动修复依赖 (-f)...";
+        _wait_for_apt_lock; apt-get install -f -y || _error "自动修复依赖失败！";
+    fi
+    
+    # --- **CRITICAL FIX: Install nginx-common to provide essential files like mime.types** ---
+    _info "正在安装 nginx-common 以提供必要的配置文件..."
+    _wait_for_apt_lock
+    apt-get install -y nginx-common || _warn "安装 nginx-common 失败，某些功能可能受影响。"
+    # --- **END CRITICAL FIX** ---
+
+    rm -f "${deb_path}"; _info "定制版 Nginx 安装成功！"
+    setup_systemd_service
 }
 
 do_install() {
