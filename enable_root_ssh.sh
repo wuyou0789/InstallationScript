@@ -2,7 +2,6 @@
 
 # 脚本：为Oracle Cloud服务器启用root用户SSH密码登录并可选安装常用工具
 # 警告：以root用户密码登录会增加服务器的安全风险。请谨慎使用，并确保密码足够复杂。
-
 # 确保以root用户运行
 if [ "$(id -u)" -ne 0 ]; then
    echo "错误：请以root用户或使用 'sudo bash $0' 运行此脚本。"
@@ -104,62 +103,80 @@ else
 fi
 echo "--------------------------------------------------"
 
-# 6. 重启SSH服务
-echo "步骤 6: 重启SSH服务"
-SSH_SERVICE_TO_USE="" # Will be set to 'ssh' or 'sshd'
+# 6. 重启并确保SSH服务已启用
+echo "步骤 6: 重启并确保SSH服务已启用"
+SSH_SERVICE_TO_USE=""
 SSH_RESTARTED_SUCCESSFULLY=false
+SERVICE_MANAGEMENT_CMD="" # Will be 'systemctl' or 'service'
 
+# Determine service management command
 if command -v systemctl > /dev/null; then
-    # 对于 Ubuntu/Debian, 服务名通常是 'ssh'. 对于 RHEL/CentOS, 是 'sshd'.
-    # 优先尝试 'ssh'
+    SERVICE_MANAGEMENT_CMD="systemctl"
+elif command -v service > /dev/null; then
+    SERVICE_MANAGEMENT_CMD="service"
+else
+    echo "  错误: 无法找到 systemctl 或 service 命令来管理SSH服务。请手动操作。"
+fi
+
+if [ "$SERVICE_MANAGEMENT_CMD" == "systemctl" ]; then
+    echo "  尝试使用 systemctl 重启 SSH 服务..."
     if systemctl restart ssh > /dev/null 2>&1; then
-        echo "  使用 systemctl 重启 ssh 服务。"
+        echo "    已使用 systemctl 重启 ssh 服务。"
         SSH_SERVICE_TO_USE="ssh"
     elif systemctl restart sshd > /dev/null 2>&1; then
-        echo "  使用 systemctl 重启 sshd 服务。"
+        echo "    已使用 systemctl 重启 sshd 服务。"
         SSH_SERVICE_TO_USE="sshd"
     else
         echo "  警告: 使用 systemctl 尝试重启 ssh 和 sshd 服务均失败。"
     fi
-elif command -v service > /dev/null; then
-    # Fallback to 'service' for older systems
+elif [ "$SERVICE_MANAGEMENT_CMD" == "service" ]; then
+    echo "  尝试使用 service 重启 SSH 服务..."
     if service ssh restart > /dev/null 2>&1; then
-        echo "  使用 service 重启 ssh 服务。"
+        echo "    已使用 service 重启 ssh 服务。"
         SSH_SERVICE_TO_USE="ssh"
     elif service sshd restart > /dev/null 2>&1; then
-        echo "  使用 service 重启 sshd 服务。"
+        echo "    已使用 service 重启 sshd 服务。"
         SSH_SERVICE_TO_USE="sshd"
     else
-        echo "  错误: systemctl 未找到，且使用 service 命令重启 ssh(d) 服务失败。请手动重启。"
+        echo "  警告: 使用 service 命令重启 ssh(d) 服务失败。"
     fi
-else
-    echo "  错误: 无法找到 systemctl 或 service 命令来重启SSH服务。请手动重启。"
 fi
 
-# 检查SSH服务状态
-echo "  检查 SSH 服务状态..."
-if [ -n "$SSH_SERVICE_TO_USE" ]; then # If a restart was attempted with a specific service name
-    if command -v systemctl > /dev/null; then
+# 如果服务被成功识别并重启，则尝试启用并检查状态
+if [ -n "$SSH_SERVICE_TO_USE" ]; then
+    if [ "$SERVICE_MANAGEMENT_CMD" == "systemctl" ]; then
+        echo "  确保 $SSH_SERVICE_TO_USE 服务已启用 (自动启动)..."
+        if systemctl enable "$SSH_SERVICE_TO_USE" > /dev/null 2>&1; then
+            echo "    $SSH_SERVICE_TO_USE 服务已启用。"
+        else
+            echo "  警告: 未能启用 $SSH_SERVICE_TO_USE 服务。它可能不会在下次启动时自动运行。"
+        fi
+
+        echo "  检查 $SSH_SERVICE_TO_USE 服务状态..."
         if systemctl is-active --quiet "$SSH_SERVICE_TO_USE"; then
-            echo "  $SSH_SERVICE_TO_USE 服务正在运行。"
+            echo "    $SSH_SERVICE_TO_USE 服务正在运行。"
             SSH_RESTARTED_SUCCESSFULLY=true
         else
             echo "  警告: $SSH_SERVICE_TO_USE 服务似乎没有成功启动。请检查日志: journalctl -u $SSH_SERVICE_TO_USE"
         fi
-    elif command -v service > /dev/null; then # systemctl not present, 'service' was used for restart
+    elif [ "$SERVICE_MANAGEMENT_CMD" == "service" ]; then # 'service' doesn't have a direct 'enable' equivalent for all init systems
+        echo "  检查 $SSH_SERVICE_TO_USE 服务状态 (使用 'service')..."
         if service "$SSH_SERVICE_TO_USE" status > /dev/null 2>&1; then
-             echo "  $SSH_SERVICE_TO_USE 服务正在运行 (通过 'service' 命令检查)。"
+             echo "    $SSH_SERVICE_TO_USE 服务正在运行。"
              SSH_RESTARTED_SUCCESSFULLY=true
+             # For 'service', enabling is typically handled by 'update-rc.d' or 'chkconfig'
+             # This script won't try to handle those for simplicity here, assuming install handled enabling.
         else
-            echo "  警告: $SSH_SERVICE_TO_USE 服务似乎没有成功启动 (通过 'service' 命令检查)。请检查日志，如 /var/log/auth.log 或 /var/log/secure。"
+            echo "  警告: $SSH_SERVICE_TO_USE 服务似乎没有成功启动。请检查日志，如 /var/log/auth.log 或 /var/log/secure。"
         fi
     fi
 else
-    # This means neither systemctl nor service commands were available or successful in identifying a service for restart.
-    echo "  警告: 未能通过 systemctl 或 service 尝试重启 SSH 服务。无法自动确认服务状态。"
-    echo "  请手动检查并重启。常见的服务名有 'ssh' 或 'sshd'。"
-    echo "  日志检查命令: 'journalctl -u ssh', 'journalctl -u sshd', 或查看 '/var/log/auth.log', '/var/log/secure'."
+    if [ -n "$SERVICE_MANAGEMENT_CMD" ]; then # If a command was found but restart failed for both names
+        echo "  警告: 未能重启 'ssh' 或 'sshd' 服务。请手动检查SSH服务配置和状态。"
+    fi
+    # If SERVICE_MANAGEMENT_CMD was empty, the initial error message already covered it.
 fi
+
 
 echo "--------------------------------------------------"
 echo "配置完成！"
