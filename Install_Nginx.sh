@@ -1,7 +1,7 @@
 #================================================================================
 # Nginx WebDAV Ultimate Script (AWUS) - Final Production Release
 #
-# Version: 4.3.3
+# Version: 4.3.0
 # Author: wuyou0789 & AI Assistant
 # GitHub: https://github.com/wuyou0789/InstallationScript
 # License: MIT
@@ -115,9 +115,7 @@ EOF_SYSTEMD
 install_dependencies() {
     _info "正在检查并安装基础依赖...";
     
-    # Use an array to store packages, this is the most robust way.
     local pkgs_to_install=()
-    
     ! _exists "curl" && pkgs_to_install+=("curl")
     ! _exists "htpasswd" && pkgs_to_install+=("apache2-utils")
     
@@ -126,25 +124,13 @@ install_dependencies() {
         pkgs_to_install+=("libpcre3")
     fi
 
-    # Check if the array is not empty
     if [ ${#pkgs_to_install[@]} -gt 0 ]; then
         _info "将要安装以下缺失的依赖: ${pkgs_to_install[*]}"
-        # Pass the array elements as separate arguments
         _install_pkgs "${pkgs_to_install[@]}"
     else
         _info "所有基础依赖均已存在。"
     fi
 
-    # 如果列表不为空，则执行一次性安装
-    if [[ -n "$pkgs_to_install" ]]; then
-        _info "将要安装以下缺失的依赖: ${pkgs_to_install}"
-        _install_pkgs $pkgs_to_install
-    else
-        _info "所有基础依赖均已存在。"
-    fi
-
-    local pkgs_to_install=""; ! _exists "curl" && pkgs_to_install+="curl "; ! _exists "htpasswd" && pkgs_to_install+="apache2-utils ";
-    if [[ -n "$pkgs_to_install" ]]; then _install_pkgs $pkgs_to_install; fi
     _info "正在检查并安装 Certbot...";
     if ! _exists "${CERTBOT_CMD}" || ! [[ $(readlink -f "${CERTBOT_CMD}") == *"/snap/"* ]]; then
         if ! _exists "certbot"; then _info "未找到 Certbot。将使用 Snap 进行安装..."; else _warn "检测到不推荐的 Certbot 版本。将自动替换为 Snap 版本..."; fi
