@@ -1,7 +1,7 @@
 #================================================================================
 # Nginx WebDAV Ultimate Script (AWUS) - Final Production Release
 #
-# Version: 4.3.0
+# Version: 4.3.3
 # Author: wuyou0789 & AI Assistant
 # GitHub: https://github.com/wuyou0789/InstallationScript
 # License: MIT
@@ -355,7 +355,6 @@ server {
         dav_access user:rw group:r all:r;
         create_full_put_path on;
         autoindex on;
-        more_set_headers "DAV: 1, 2";
     }
 
     ssl_certificate /etc/letsencrypt/live/${DOMAIN_NAME}/fullchain.pem;
