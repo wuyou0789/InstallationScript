@@ -386,7 +386,7 @@ do_status() {
 }
 
 do_accounts_manage() {
-    load_config; local action="$1"; local username="$2"; local passwd_file="${AWUS_NGINX_PASSWD_FILE}"
+    load_config; local action="$1"; local username="${2:-}"; local passwd_file="${AWUS_NGINX_PASSWD_FILE}"
     if [ ! -f "$passwd_file" ] && [[ "$action" != "add" ]]; then _error "密码文件 (${passwd_file}) 不存在。"; fi
     case "$action" in
         view) _info "--- WebDAV 用户列表 ---"; cut -d: -f1 "${passwd_file}" | sed 's/^/  /' || _warn "密码文件为空。";;
