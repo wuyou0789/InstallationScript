@@ -1,7 +1,8 @@
+#!/bin/bash
 #================================================================================
-# Nginx WebDAV Ultimate Script (AWUS) - Final Production Release
+# Nginx WebDAV Ultimate Script (AWUS) - Final Production Release (MODIFIED)
 #
-# Version: 4.3.0
+# Version: 4.3.2-mod
 # Author: wuyou0789 & AI Assistant
 # GitHub: https://github.com/wuyou0789/InstallationScript
 # License: MIT
@@ -15,12 +16,13 @@ set -euo pipefail
 IFS=$'\n\t'
 
 # --- Global Constants ---
-readonly SCRIPT_VERSION="4.2.4-nginx-final"
+readonly SCRIPT_VERSION="4.3.2-mod"
 readonly RED='\033[1;31m'
 readonly GREEN='\033[1;32m'
 readonly YELLOW='\033[1;33m'
 readonly BLUE='\033[0;34m'
 readonly NC='\033[0m'
+readonly BOLD='\033[1m'
 
 # --- Configuration Paths ---
 readonly SCRIPT_INSTALL_DIR="/usr/local/etc/awus-script"
@@ -73,20 +75,33 @@ _install_pkgs() {
 
 _nginx_ctl() {
     local action="$1"; _info "正在 ${action} Nginx 服务..."
-    if ! systemctl "${action}" nginx; then _error "执行 systemctl ${action} nginx 失败。"; fi
+    if ! systemctl "${action}" nginx; then _warn "执行 systemctl ${action} nginx 失败 (可能服务已不存在)。"; fi
     sleep 1
     if [[ "$action" == "start" || "$action" == "restart" ]]; then
         if ! systemctl is-active --quiet nginx; then _warn "Nginx 服务在 ${action} 后状态为【非活动】！"; fi
     fi
-    _info "Nginx 服务 ${action} 完成。"
 }
 
 load_config() { if [ -f "$CONFIG_FILE" ]; then source "$CONFIG_FILE"; fi; }
 
+# --- MODIFIED setup_script_invocation ---
 setup_script_invocation() {
-    _info "正在安装脚本以供后续使用..."; mkdir -p "$SCRIPT_INSTALL_DIR"; cp -f "$0" "$SCRIPT_SELF_PATH"; chmod +x "$SCRIPT_SELF_PATH"
-    echo "alias webdav='bash ${SCRIPT_SELF_PATH}'" > "$ALIAS_FILE"
-    _info "别名 'webdav' 已创建。请运行 'source ${ALIAS_FILE}' 或重新登录以使用。Zsh 用户可能需添加到 .zshrc。"
+    _info "正在安装/更新脚本以供后续使用..."
+    mkdir -p "$SCRIPT_INSTALL_DIR"
+    # 只有当执行的脚本和目标位置不是同一个文件时，才执行复制操作
+    if [ ! -f "$SCRIPT_SELF_PATH" ] || ! cmp -s "$0" "$SCRIPT_SELF_PATH"; then
+        cp -f "$0" "$SCRIPT_SELF_PATH"
+        _info "脚本已复制/更新至 ${SCRIPT_SELF_PATH}"
+    else
+        _info "脚本已在最新位置运行，无需复制。"
+    fi
+    chmod +x "$SCRIPT_SELF_PATH"
+    
+    # 创建别名文件
+    if ! [ -f "$ALIAS_FILE" ] || ! grep -q "alias webdav=" "$ALIAS_FILE"; then
+        echo "alias webdav='bash ${SCRIPT_SELF_PATH}'" > "$ALIAS_FILE"
+        _info "别名 'webdav' 已创建。请运行 'source ${ALIAS_FILE}' 或重新登录以使用。"
+    fi
 }
 
 setup_systemd_service() {
@@ -164,9 +179,9 @@ install_custom_nginx() {
         _error "不支持的系统架构: ${arch}。本脚本只支持 amd64 和 arm64。"
     fi
     
-    local release_tag="nginx-custom-webdav" # 您的 GitHub Release 标签
+    local release_tag="nginx-custom-webdav"
     local deb_url="https://github.com/wuyou0789/InstallationScript/releases/download/${release_tag}/${deb_filename}"
-    local deb_path="/tmp/${deb_filename}" # 现在 deb_filename 一定有值
+    local deb_path="/tmp/${deb_filename}"
 
     _info "正在从 GitHub 下载 [${arch}] 版本的 Nginx 包...";
     if ! curl -L --fail -o "${deb_path}" "${deb_url}"; then
@@ -197,7 +212,6 @@ do_install() {
     install_cleanup() {
         _warn "\n--- 安装过程中发生错误，正在执行自动清理... ---";
         systemctl stop nginx &>/dev/null || true 
-        # Restore nginx.conf from backup if one was made and script is aborting
         if [ -f "${nginx_main_conf}.awus.bak" ]; then
             _warn "正在从备份恢复 ${nginx_main_conf}..."
             mv "${nginx_main_conf}.awus.bak" "${nginx_main_conf}" || _warn "恢复 nginx.conf 失败。"
@@ -223,7 +237,6 @@ do_install() {
     local ADMIN_PASS; while true; do read -r -s -p "为 ${ADMIN_USER} 设置密码: " ADMIN_PASS; echo; read -r -s -p "确认密码: " confirm_pass; echo; if [[ "$ADMIN_PASS" == "$confirm_pass" && -n "$ADMIN_PASS" ]]; then break; else _warn "密码为空或不匹配。"; fi; done
 
     _info "正在准备 Nginx 配置文件...";
-    # --- **CRITICAL FIX: Create a brand new, minimal nginx.conf** ---
     _info "正在创建全新的 Nginx 主配置文件 (${nginx_main_conf})..."
     if [ -f "${nginx_main_conf}" ]; then
         mv "${nginx_main_conf}" "${nginx_main_conf}.awus.bak"
@@ -233,13 +246,9 @@ do_install() {
 user www-data;
 worker_processes auto;
 pid /var/run/nginx.pid;
-# include /etc/nginx/modules-enabled/*.conf; # Optional, if your custom build uses it
-
 events {
     worker_connections 768;
-    # multi_accept on;
 }
-
 http {
     sendfile on;
     tcp_nopush on;
@@ -247,25 +256,16 @@ http {
     keepalive_timeout 65;
     types_hash_max_size 2048;
     server_tokens off;
-
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
-
     access_log /var/log/nginx/access.log;
     error_log /var/log/nginx/error.log;
-
-    # gzip on;
-    # gzip_disable "msie6";
-    # ... other gzip settings if needed ...
-
     dav_ext_lock_zone zone=webdav:10m;
-
     include /etc/nginx/conf.d/*.conf;
     include /etc/nginx/sites-enabled/*;
 }
 EOF_NGINX_CONF
     _info "全新的 ${nginx_main_conf} 创建成功。"
-    # --- **END CRITICAL FIX** ---
 
     mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/nginx/conf.d /var/log/nginx "/var/cache/nginx/client_temp"
 
@@ -304,7 +304,7 @@ EOF_VHOST_TEMP
     fi
 
     _info "SSL 证书已处理。正在生成最终的 Nginx 配置文件..."
-    nginx_vhost_path="/etc/nginx/sites-available/${DOMAIN_NAME}" # This is our final config file
+    nginx_vhost_path="/etc/nginx/sites-available/${DOMAIN_NAME}"
     cat <<EOF_VHOST_FINAL | tee "${nginx_vhost_path}" > /dev/null
 server {
     listen 80; listen [::]:80; server_name ${DOMAIN_NAME};
@@ -315,34 +315,23 @@ server {
     listen 443 ssl;
     listen [::]:443 ssl;
     http2 on;
-
     server_name ${DOMAIN_NAME};
     root ${WEBDEV_DIR};
     charset utf-8;
-    # 3. 设置一个合理的上传大小限制
-    client_max_body_size 2M;
-
-    # 2. 添加推荐的安全头
+    client_max_body_size 2G; # Increased limit
     add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "SAMEORIGIN" always;
-
-    # 日志
     access_log /var/log/nginx/${DOMAIN_NAME}.access.log;
     error_log /var/log/nginx/${DOMAIN_NAME}.error.log warn;
-   
-    # 阻止访问隐藏文件
     location ~ /\.(_.*|DS_Store|thumbs\.db)$ { return 403; }
-
     location / {
         auth_basic "Secure WebDAV"; auth_basic_user_file ${NGINX_PASSWD_FILE};
-        # dav_methods PUT DELETE MKCOL COPY MOVE;
         dav_ext_methods PROPFIND OPTIONS;
         dav_access user:rw group:r all:r;
         create_full_put_path on;
         autoindex on;
     }
-
     ssl_certificate /etc/letsencrypt/live/${DOMAIN_NAME}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${DOMAIN_NAME}/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
@@ -411,30 +400,118 @@ do_accounts_manage() {
     esac
 }
 
+# --- THOROUGH UNINSTALL FUNCTION ---
+do_thorough_uninstall() {
+    load_config
+    local data_dir="${AWUS_WEBDEV_DIR:-'未配置或未知'}"
+    _warn "--- AWUS 彻底卸载程序 (保留数据) ---"
+    echo -e "${RED}警告：此操作将执行以下所有步骤："
+    echo -e "  - 停止并卸载定制版 Nginx"
+    echo -e "  - 删除所有 Nginx 配置 (/etc/nginx) 和日志 (/var/log/nginx)"
+    echo -e "  - 删除为域名 ${YELLOW}${AWUS_DOMAIN_NAME:-未知}${NC}${RED} 申请的 SSL 证书"
+    echo -e "  - 卸载 Certbot (如果是通过 Snap 安装的)"
+    echo -e "  - 移除 AWUS 脚本本身及其配置文件"
+    echo -e "  - 尝试清理不再需要的依赖包"
+    echo -e "${GREEN}唯一会保留的是您的数据目录：${YELLOW}${data_dir}${NC}"
+    echo -e "${RED}此操作不可逆！${NC}"
+
+    if [[ -z "${AWUS_DOMAIN_NAME:-}" ]]; then
+        _error "无法从配置文件中读取域名，无法继续。请确保 ${CONFIG_FILE} 存在。"
+    fi
+
+    read -r -p "请输入您的域名 (${AWUS_DOMAIN_NAME}) 进行确认以继续: " confirm_domain
+    if [[ "$confirm_domain" != "${AWUS_DOMAIN_NAME}" ]]; then
+        _error "域名确认不匹配。操作已中止。"
+    fi
+
+    _info "正在开始彻底卸载流程..."
+
+    # 1. Stop and disable Nginx
+    _info "正在停止并禁用 Nginx 服务..."
+    _nginx_ctl "stop"
+    systemctl disable nginx &>/dev/null || _warn "禁用 Nginx 服务失败。"
+
+    # 2. Delete SSL Certificate
+    if _exists "${CERTBOT_CMD}"; then
+        _info "正在为 ${AWUS_DOMAIN_NAME} 删除 SSL 证书..."
+        if [ -d "/etc/letsencrypt/live/${AWUS_DOMAIN_NAME}" ]; then
+            "${CERTBOT_CMD}" delete --cert-name "${AWUS_DOMAIN_NAME}" --non-interactive || _warn "删除证书失败，可能需要手动处理。"
+        else
+            _info "未找到 ${AWUS_DOMAIN_NAME} 的证书目录，跳过删除。"
+        fi
+    fi
+
+    # 3. Uninstall Certbot
+    if _exists "snap" && snap list | grep -q 'certbot'; then
+        _info "正在通过 Snap 卸载 Certbot..."
+        snap remove certbot || _warn "通过 Snap 卸载 Certbot 失败。"
+    fi
+
+    # 4. Purge Nginx and remove its directories
+    _info "正在使用 'apt-get purge' 彻底卸载 Nginx..."
+    _wait_for_apt_lock
+    apt-get purge -y nginx-custom-webdav &>/dev/null || _warn "apt-get purge nginx-custom-webdav 失败。"
+    _info "正在删除 Nginx 残留目录..."
+    rm -rf /etc/nginx /var/log/nginx
+    
+    # 5. Clean up dependencies
+    _info "正在运行 'apt-get autoremove' 来清理不再需要的依赖..."
+    _wait_for_apt_lock
+    apt-get autoremove --purge -y
+
+    # 6. Remove AWUS script files
+    _info "正在移除 AWUS 脚本和配置文件..."
+    rm -f "$SCRIPT_SELF_PATH" "$CONFIG_FILE" "$ALIAS_FILE" "$LOCK_FILE"
+    rm -rf "$SCRIPT_INSTALL_DIR"
+    
+    _info "${GREEN}--- 彻底卸载完成 ---${NC}"
+    _info "所有相关组件（除数据外）均已移除。"
+    _info "您的数据仍然安全地保存在: ${data_dir}"
+}
+
+# --- UNINSTALL WIZARD ---
 do_uninstall() {
     load_config; _warn "--- AWUS Nginx WebDAV 卸载向导 ---"
-    echo -e "  1) 仅移除 AWUS 配置 (保留 Nginx)"; echo -e "  2) ${RED}彻底卸载 Nginx 及所有配置${NC}"; echo -e "  0) 取消"
-    read -r -p "请输入选项 [1, 2, 0]: " choice
+    echo -e "  请选择卸载级别："
+    echo -e "  1) ${GREEN}保留式卸载${NC}: 仅移除 AWUS 脚本和 Nginx 站点配置。Nginx 程序、数据和证书将保留。"
+    echo -e "  2) ${YELLOW}标准卸载${NC}:   卸载 Nginx 程序和所有配置。数据和证书将保留。"
+    echo -e "  3) ${RED}彻底卸载${NC}:   卸载 Nginx、证书、Certbot 及相关依赖。${BOLD}仅保留数据目录。${NC}"
+    echo -e "  0) 取消"
+    read -r -p "请输入选项 [1, 2, 3, 0]: " choice
     case "$choice" in
         1)
-            read -r -p "$(echo -e ${YELLOW}"确定要移除 AWUS 脚本和 Nginx 站点配置吗? (y/n): "${NC})" confirm
+            _warn "这将移除 AWUS 脚本和为 ${AWUS_DOMAIN_NAME:-'your.domain'} 创建的 Nginx 站点配置。"
+            read -r -p "$(echo -e ${YELLOW}"确定吗? (y/n): "${NC})" confirm
             if [[ "$confirm" =~ ^[Yy] ]]; then
                 if [ -n "${AWUS_DOMAIN_NAME:-}" ]; then rm -f "/etc/nginx/sites-enabled/${AWUS_DOMAIN_NAME}" "/etc/nginx/sites-available/${AWUS_DOMAIN_NAME}"; fi
-                # No separate permissions map file in this simplified version
                 rm -f "$SCRIPT_SELF_PATH" "$CONFIG_FILE" "$ALIAS_FILE"
+                rm -rf "$SCRIPT_INSTALL_DIR"
                 _info "AWUS 配置已移除。建议运行 'nginx -t && systemctl reload nginx'。"
+            else
+                _info "操作已取消。"
             fi;;
         2)
-            read -r -p "$(echo -e ${RED}"警告：这将完全卸载 Nginx！数据目录不会被删除。(y/n): "${NC})" confirm
+            _warn "这将彻底卸载 Nginx 程序！您的数据和 SSL 证书不会被删除。"
+            read -r -p "$(echo -e ${RED}"确定要完全卸载 Nginx 吗? (y/n): "${NC})" confirm
             if [[ "$confirm" =~ ^[Yy] ]]; then
                 if [ -n "${AWUS_DOMAIN_NAME:-}" ]; then rm -f "/etc/nginx/sites-enabled/${AWUS_DOMAIN_NAME}" "/etc/nginx/sites-available/${AWUS_DOMAIN_NAME}"; fi
-                rm -f "$SCRIPT_SELF_PATH" "$CONFIG_FILE" "$ALIAS_FILE"
-                _nginx_ctl "stop" && systemctl disable nginx &>/dev/null || true
+                _nginx_ctl "stop"
+                systemctl disable nginx &>/dev/null || true
                 _info "正在使用 'apt-get purge' 彻底卸载 Nginx...";
+                _wait_for_apt_lock
                 apt-get purge -y nginx-custom-webdav && apt-get autoremove -y
-                rm -rf /etc/nginx; _info "Nginx 已卸载。"
-                _warn "WebDAV 数据 (${AWUS_WEBDEV_DIR:-}) 和 SSL 证书 (${AWUS_DOMAIN_NAME:-}) 未被删除。"
+                _info "正在移除 Nginx 配置目录..."
+                rm -rf /etc/nginx
+                _info "正在移除 AWUS 脚本和配置..."
+                rm -f "$SCRIPT_SELF_PATH" "$CONFIG_FILE" "$ALIAS_FILE"
+                rm -rf "$SCRIPT_INSTALL_DIR"
+                _info "Nginx 已卸载。"
+                _warn "WebDAV 数据 (${AWUS_WEBDEV_DIR:-}) 和 SSL 证书 (/etc/letsencrypt/${AWUS_DOMAIN_NAME:-}) 未被删除。"
+            else
+                _info "操作已取消。"
             fi;;
+        3)
+            do_thorough_uninstall ;;
         0) _info "操作已取消." ;; *) _warn "无效选项。" ;;
     esac
 }
@@ -449,7 +526,7 @@ ${BLUE}======================================================${NC}
  WebDAV 目录:     ${YELLOW}${AWUS_WEBDEV_DIR:-未配置}${NC}
 ${BLUE}------------------------------------------------------${NC}
 ${GREEN}1.${NC} (重新)安装/配置 WebDAV
-${GREEN}2.${NC} ${RED}卸载向导 (移除配置或彻底卸载Nginx)${NC}
+${GREEN}2.${NC} ${RED}卸载向导 (提供多种卸载选项)${NC}
 ${GREEN}3.${NC} 启动 Nginx      ${GREEN}4.${NC} 停止 Nginx      ${GREEN}5.${NC} 重启 Nginx
 ${GREEN}6.${NC} 查看服务状态和配置信息
 ${BLUE}------------------ 账户管理 --------------------${NC}
@@ -478,20 +555,17 @@ ${GREEN}0.${NC} 退出脚本
 
 # --- Script Entry Point ---
 main() {
-    check_root # Ensure script is run with root privileges
+    check_root
     (
         flock -n 200 || _error "另一个脚本实例正在运行。请等待其完成后再试。"
 
-        # All commands from here are run with root privileges.
-
         case "${1:-}" in
             install)
-                # No need for confirmation here if called directly with 'install'
                 do_install
                 exit 0
                 ;;
-            ""|menu) # No arguments, or 'menu' explicitly called
-                if [[ -f "$CONFIG_FILE" ]]; then # If config file exists, assume installed
+            ""|menu)
+                if [[ -f "$CONFIG_FILE" ]]; then
                     while true; do main_menu; done
                 else
                     _info "欢迎使用 AWUS (Nginx 定制版)!";
@@ -520,7 +594,7 @@ main() {
                 echo "无参数运行将进入交互式菜单或安装向导。"; echo
                 echo "主要命令:";
                 echo "  install          交互式安装或重新配置 WebDAV 服务。"
-                echo "  uninstall        卸载 AWUS 配置或 Nginx 服务。"
+                echo "  uninstall        启动卸载向导，提供多种卸载选项。"
                 echo "  status           显示服务状态和配置信息。"
                 echo "  start|stop|restart 控制 Nginx 服务。"
                 echo "  accounts <subcommand> [username] 管理用户。"
