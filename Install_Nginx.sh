@@ -9,7 +9,69 @@
 #
 # INVOCATION: This script MUST be run with root privileges.
 #             e.g., sudo ./awus.sh install
-#================================================================================
+#===============================================================================
+#  Nginx/WebDAV Kernel Optimization Script
+#  This script safely adds or updates network performance settings in sysctl.conf.
+#  It is idempotent: running it multiple times will not create duplicates.
+# ==============================================================================
+
+# Ensure the script is run as root
+if [ "$(id -u)" -ne 0 ]; then
+   echo "This script must be run as root. Please use sudo." >&2
+   exit 1
+fi
+
+# --- Configuration ---
+CONF_FILE="/etc/sysctl.conf"
+START_MARKER="# --- BEGIN NGINX/WebDAV OPTIMIZATIONS ---"
+END_MARKER="# --- END NGINX/WebDAV OPTIMIZATIONS ---"
+
+# --- The block of optimizations to apply ---
+OPTIMIZATIONS=$(cat <<'EOF'
+# --- BEGIN NGINX/WebDAV OPTIMIZATIONS ---
+# Optimized for high-throughput file serving with many connections.
+
+#缓存更换机制
+vm.vfs_cache_pressure = 50
+
+# 1. Increase TCP maximum buffer sizes
+net.core.wmem_max = 16777216
+net.core.rmem_max = 16777216
+
+# 2. Set TCP buffer sizes (min, default, max)
+net.ipv4.tcp_wmem = 4096 87380 16777216
+net.ipv4.tcp_rmem = 4096 87380 16777216
+
+# 3. Increase connection queue limits
+net.core.somaxconn = 65535
+net.ipv4.tcp_max_syn_backlog = 65535
+
+# 4. Reduce TIME_WAIT socket connection timeout
+net.ipv4.tcp_fin_timeout = 30
+
+# --- END NGINX/WebDAV OPTIMIZATIONS ---
+EOF
+)
+
+# --- Main Logic ---
+
+echo "--> Backing up the original $CONF_FILE to $CONF_FILE.bak..."
+# Create a backup just in case
+cp "$CONF_FILE" "$CONF_FILE.bak_$(date +%F)"
+
+echo "--> Removing any existing optimization block..."
+# Use sed to delete the entire block between the markers, if it exists
+sed -i "/$START_MARKER/,/$END_MARKER/d" "$CONF_FILE"
+
+echo "--> Appending the new optimization block to $CONF_FILE..."
+# Append the new, correct block to the end of the file
+echo "$OPTIMIZATIONS" >> "$CONF_FILE"
+
+echo "--> Applying new settings immediately..."
+# Load the new settings into the running kernel
+sysctl -p
+
+echo "✅ Success! Kernel parameters have been updated."
 
 # --- Strict Mode & Environment ---
 set -euo pipefail
@@ -247,7 +309,8 @@ user www-data;
 worker_processes auto;
 pid /var/run/nginx.pid;
 events {
-    worker_connections 768;
+    worker_connections 65535;
+    multi_accept on;
 }
 http {
     sendfile on;
@@ -318,6 +381,9 @@ server {
     server_name ${DOMAIN_NAME};
     root ${WEBDEV_DIR};
     charset utf-8;
+    # --- 核心系统 I/O 优化 ---
+    sendfile on;
+    tcp_nopush on;
     client_max_body_size 2G; # Increased limit
     add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
     add_header X-Content-Type-Options "nosniff" always;
