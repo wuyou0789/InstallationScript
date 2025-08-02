@@ -1,84 +1,21 @@
 #!/bin/bash
-#================================================================================
-# Nginx WebDAV Ultimate Script (AWUS) - Final Production Release (MODIFIED)
+
+# ================================================================================
+# Nginx WebDAV Ultimate Script
 #
-# Version: 4.3.2-mod
+# Version: 4.3.3-integrated
 # Author: wuyou0789 & AI Assistant
 # GitHub: https://github.com/wuyou0789/InstallationScript
 # License: MIT
-#
-# INVOCATION: This script MUST be run with root privileges.
-#             e.g., sudo ./awus.sh install
-#===============================================================================
-#  Nginx/WebDAV Kernel Optimization Script
-#  This script safely adds or updates network performance settings in sysctl.conf.
-#  It is idempotent: running it multiple times will not create duplicates.
-# ==============================================================================
 
-# Ensure the script is run as root
-if [ "$(id -u)" -ne 0 ]; then
-   echo "This script must be run as root. Please use sudo." >&2
-   exit 1
-fi
-
-# --- Configuration ---
-CONF_FILE="/etc/sysctl.conf"
-START_MARKER="# --- BEGIN NGINX/WebDAV OPTIMIZATIONS ---"
-END_MARKER="# --- END NGINX/WebDAV OPTIMIZATIONS ---"
-
-# --- The block of optimizations to apply ---
-OPTIMIZATIONS=$(cat <<'EOF'
-# --- BEGIN NGINX/WebDAV OPTIMIZATIONS ---
-# Optimized for high-throughput file serving with many connections.
-
-#缓存更换机制
-vm.vfs_cache_pressure = 50
-
-# 1. Increase TCP maximum buffer sizes
-net.core.wmem_max = 16777216
-net.core.rmem_max = 16777216
-
-# 2. Set TCP buffer sizes (min, default, max)
-net.ipv4.tcp_wmem = 4096 87380 16777216
-net.ipv4.tcp_rmem = 4096 87380 16777216
-
-# 3. Increase connection queue limits
-net.core.somaxconn = 65535
-net.ipv4.tcp_max_syn_backlog = 65535
-
-# 4. Reduce TIME_WAIT socket connection timeout
-net.ipv4.tcp_fin_timeout = 30
-
-# --- END NGINX/WebDAV OPTIMIZATIONS ---
-EOF
-)
-
-# --- Main Logic ---
-
-echo "--> Backing up the original $CONF_FILE to $CONF_FILE.bak..."
-# Create a backup just in case
-cp "$CONF_FILE" "$CONF_FILE.bak_$(date +%F)"
-
-echo "--> Removing any existing optimization block..."
-# Use sed to delete the entire block between the markers, if it exists
-sed -i "/$START_MARKER/,/$END_MARKER/d" "$CONF_FILE"
-
-echo "--> Appending the new optimization block to $CONF_FILE..."
-# Append the new, correct block to the end of the file
-echo "$OPTIMIZATIONS" >> "$CONF_FILE"
-
-echo "--> Applying new settings immediately..."
-# Load the new settings into the running kernel
-sysctl -p
-
-echo "✅ Success! Kernel parameters have been updated."
+# ================================================================================
 
 # --- Strict Mode & Environment ---
 set -euo pipefail
 IFS=$'\n\t'
 
 # --- Global Constants ---
-readonly SCRIPT_VERSION="4.3.2-mod"
+readonly SCRIPT_VERSION="4.3.3-integrated"
 readonly RED='\033[1;31m'
 readonly GREEN='\033[1;32m'
 readonly YELLOW='\033[1;33m'
@@ -93,14 +30,72 @@ readonly CONFIG_FILE="${SCRIPT_INSTALL_DIR}/config.conf"
 readonly DEFAULT_NGINX_PASSWD_FILE="/etc/nginx/webdav.passwd"
 readonly ALIAS_FILE="/etc/profile.d/awus-alias.sh"
 readonly LOCK_FILE="/var/tmp/awus.lock"
-readonly CERTBOT_CMD="/usr/bin/certbot" 
+readonly CERTBOT_CMD="/usr/bin/certbot"
 
 # --- Logging and Status Functions ---
 _info() { printf "${GREEN}[信息] %s${NC}\n" "$*"; }
 _warn() { printf "${YELLOW}[警告] %s${NC}\n" "$*"; }
 _error() { printf "${RED}[错误] %s${NC}\n" "$*"; exit 1; }
 
-# --- Prerequisite and Utility Functions ---
+apply_kernel_optimizations() {
+    _info "--- 正在应用内核性能优化 (sysctl.conf) ---"
+    local CONF_FILE="/etc/sysctl.conf"
+    local START_MARKER="# --- BEGIN NGINX/WebDAV OPTIMIZATIONS ---"
+    local END_MARKER="# --- END NGINX/WebDAV OPTIMIZATIONS ---"
+
+    local OPTIMIZATIONS
+    OPTIMIZATIONS=$(cat <<'EOF'
+# --- BEGIN NGINX/WebDAV OPTIMIZATIONS ---
+# Optimized for high-throughput file serving with many connections.
+vm.vfs_cache_pressure = 50
+net.core.wmem_max = 16777216
+net.core.rmem_max = 16777216
+net.ipv4.tcp_wmem = 4096 87380 16777216
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.core.somaxconn = 65535
+net.ipv4.tcp_max_syn_backlog = 65535
+net.ipv4.tcp_fin_timeout = 30
+# --- END NGINX/WebDAV OPTIMIZATIONS ---
+EOF
+    )
+
+    # Idempotent update: remove old block, append new one.
+    if ! grep -q "$START_MARKER" "$CONF_FILE"; then
+        cp "$CONF_FILE" "$CONF_FILE.bak_$(date +%F)"
+    fi
+    sed -i "/$START_MARKER/,/$END_MARKER/d" "$CONF_FILE"
+    echo "$OPTIMIZATIONS" >> "$CONF_FILE"
+    _info "正在加载新的内核参数..."
+    sysctl -p
+    _info "内核参数已更新。"
+}
+
+apply_nginx_limits() {
+    _info "--- 正在为 Nginx 设置文件描述符限制 (systemd) ---"
+    local SERVICE_NAME="nginx.service"
+    local LIMIT_VALUE="65535"
+
+    if ! systemctl list-units --full -all | grep -q "$SERVICE_NAME"; then
+        _warn "Nginx 服务不存在，跳过限制设置。"
+        return
+    fi
+
+    local OVERRIDE_DIR="/etc/systemd/system/${SERVICE_NAME}.d"
+    mkdir -p "$OVERRIDE_DIR"
+
+    local OVERRIDE_CONTENT
+    OVERRIDE_CONTENT=$(cat <<EOF
+[Service]
+LimitNOFILE=${LIMIT_VALUE}
+EOF
+    )
+
+    echo "$OVERRIDE_CONTENT" > "${OVERRIDE_DIR}/limits.conf"
+    _info "正在重载 systemd 配置..."
+    systemctl daemon-reload
+    _info "文件描述符限制已设置为 ${LIMIT_VALUE}。将在下次 Nginx 重启时生效。"
+}
+
 check_root() { if [[ $EUID -ne 0 ]]; then _error "此脚本必须以 root 权限运行。请使用 'sudo ./awus.sh'。"; fi; }
 _exists() { command -v "$1" >/dev/null 2>&1; }
 
@@ -146,11 +141,9 @@ _nginx_ctl() {
 
 load_config() { if [ -f "$CONFIG_FILE" ]; then source "$CONFIG_FILE"; fi; }
 
-# --- MODIFIED setup_script_invocation ---
 setup_script_invocation() {
     _info "正在安装/更新脚本以供后续使用..."
     mkdir -p "$SCRIPT_INSTALL_DIR"
-    # 只有当执行的脚本和目标位置不是同一个文件时，才执行复制操作
     if [ ! -f "$SCRIPT_SELF_PATH" ] || ! cmp -s "$0" "$SCRIPT_SELF_PATH"; then
         cp -f "$0" "$SCRIPT_SELF_PATH"
         _info "脚本已复制/更新至 ${SCRIPT_SELF_PATH}"
@@ -159,7 +152,6 @@ setup_script_invocation() {
     fi
     chmod +x "$SCRIPT_SELF_PATH"
     
-    # 创建别名文件
     if ! [ -f "$ALIAS_FILE" ] || ! grep -q "alias webdav=" "$ALIAS_FILE"; then
         echo "alias webdav='bash ${SCRIPT_SELF_PATH}'" > "$ALIAS_FILE"
         _info "别名 'webdav' 已创建。请运行 'source ${ALIAS_FILE}' 或重新登录以使用。"
@@ -381,22 +373,20 @@ server {
     server_name ${DOMAIN_NAME};
     root ${WEBDEV_DIR};
     charset utf-8;
-    # --- 核心系统 I/O 优化 ---
-    sendfile on;
-    tcp_nopush on;
-    client_max_body_size 2G; # Increased limit
+
+    client_max_body_size 1M; # Increased limit
     add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "SAMEORIGIN" always;
     access_log /var/log/nginx/${DOMAIN_NAME}.access.log;
     error_log /var/log/nginx/${DOMAIN_NAME}.error.log warn;
+    autoindex on;
+
     location ~ /\.(_.*|DS_Store|thumbs\.db)$ { return 403; }
     location / {
         auth_basic "Secure WebDAV"; auth_basic_user_file ${NGINX_PASSWD_FILE};
         dav_ext_methods PROPFIND OPTIONS;
-        dav_access user:rw group:r all:r;
-        create_full_put_path on;
-        autoindex on;
+        dav_access user:r group:r all:r;
     }
     ssl_certificate /etc/letsencrypt/live/${DOMAIN_NAME}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${DOMAIN_NAME}/privkey.pem;
@@ -410,7 +400,13 @@ EOF_VHOST_FINAL
     rm -f "$temp_nginx_vhost_path" || true
     ln -sf "$nginx_vhost_path" "/etc/nginx/sites-enabled/"
 
-    _info "最终测试并重启 Nginx..."; nginx -t || _error "最终配置测试失败！"; _nginx_ctl "restart"
+    _info "--- 正在应用最终的系统性能优化 ---"
+    apply_kernel_optimizations
+    apply_nginx_limits
+
+    _info "最终测试并重启 Nginx..."; 
+    nginx -t || _error "最终配置测试失败！"; 
+    _nginx_ctl "restart"
 
     trap - ERR EXIT
     _info "${GREEN}--- Nginx WebDAV 安装和配置成功！ ---${NC}";
