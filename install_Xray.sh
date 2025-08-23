@@ -171,6 +171,7 @@ generate_xray_config() {
     jq -n --argjson port "$xray_port" --arg uuid "$client_uuid" --arg p_key "$private_key" \
           --arg s_id "$short_id" --arg target_domain "$fallback_target" \
       '{ "log": {"loglevel": "warning"},
+         "dns": {"servers": ["https+local://cloudflare-dns.com/dns-query", "1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "localhost"]},
          "inbounds": [{"listen": "0.0.0.0", "port": $port, "protocol": "vless",
            "settings": {"clients": [{"id": $uuid, "flow": "xtls-rprx-vision"}], "decryption": "none"},
            "streamSettings": {"network": "raw", "security": "reality",
@@ -179,11 +180,10 @@ generate_xray_config() {
                                 "maxClientVer": "", "maxTimeDiff": 60000, "shortIds": [$s_id]}},
            "sniffing": {"enabled": true, "destOverride": ["http", "tls", "fakedns"]}}],
          "outbounds": [{"protocol": "freedom", "tag": "direct"}, {"protocol": "blackhole", "tag": "block"}],
-         "routing": {"domainStrategy": "AsIs", "rules": [
-           {"type": "field", "outboundTag": "block", "ip": ["geoip:cn"], "ruleTag": "block-cn-ip"},
-           {"type": "field", "outboundTag": "block", "domain": ["geosite:cn"], "ruleTag": "block-cn-domain"},
-           {"type": "field", "outboundTag": "block", "protocol": ["bittorrent"], "ruleTag": "block-bittorrent"},
-           {"type": "field", "outboundTag": "block", "ip": ["geoip:private"], "ruleTag": "block-private-ip"}]}}' > "$XRAY_TEMP_CONFIG_FILE" || _error "jq 生成配置失败。"
+         "routing": {"domainStrategy": "IPIfNonMatch", "rules": [
+           {"type": "field", "outboundTag": "blocked", "protocol": ["bittorrent"]},
+           {"type": "field", "outboundTag": "blocked", "domain": ["geosite:cn","geoip:private","category-ads-all"]},
+           {"type": "field", "outboundTag": "blocked", "ip": ["geoip:cn","geoip:private"]}}}' > "$XRAY_TEMP_CONFIG_FILE" || _error "jq 生成配置失败。"
     
     _info "配置文件内容已生成到 ${XRAY_TEMP_CONFIG_FILE}."
     mkdir -p "$(dirname "$XRAY_CONFIG_FILE")"
