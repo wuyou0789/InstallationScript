@@ -150,46 +150,104 @@ update_geodata() {
 
 generate_xray_config() {
     _info "--- 开始 Xray 配置向导 ---"
-    local xray_port client_uuid fallback_target private_key short_id client_uuid_val keys_val
-    while true; do
-        read -p "Xray 监听端口 (1-65535, 默认 443): " xray_port; [[ -z "$xray_port" ]] && xray_port=443
-        if [[ "$xray_port" =~ ^[0-9]+$ && "$xray_port" -ge 1 && "$xray_port" -le 65535 ]]; then break
-        else _warn "端口 '${xray_port}' 无效。"; fi
-    done
-    fallback_target=$(validate_dest_domain)
-    ! _exists "$XRAY_BIN_PATH" && _warn "Xray 未找到，尝试安装/更新..." && install_xray_core
-    read -p "自定义 UUID (留空自动生成): " client_uuid
-    if [[ -z "$client_uuid" ]]; then
-        client_uuid_val=$($XRAY_BIN_PATH uuid); [[ -z "$client_uuid_val" ]] && _error "Xray 生成 UUID 失败。"
-        client_uuid="$client_uuid_val"; _info "已生成 UUID: ${client_uuid}"
-    elif ! [[ "$client_uuid" =~ ^[0-9a-fA-F]{8}-(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$ ]]; then _warn "UUID 格式似不正确。"; fi
-    keys_val=$($XRAY_BIN_PATH x25519); [[ -z "$keys_val" ]] && _error "Xray 生成密钥对失败。"
-    private_key=$(echo "$keys_val" | awk '/Private key/ {print $3}'); [[ -z "$private_key" ]] && _error "提取私钥失败。"
-    short_id=$(openssl rand -hex 8)
-    _info "创建配置文件内容..." && mkdir -p "$(dirname "$XRAY_CONFIG_FILE")"
+    read -p "请输入 Xray 监听端口 (1-65535, 默认 443): " xray_port
+    [[ -z "$xray_port" ]] && xray_port=443
+    local fallback_target=$(validate_dest_domain)
+    if ! _exists "$XRAY_BIN_PATH"; then
+      install_xray_core
+    fi
+    read -p "请输入自定义 UUID (留空将自动生成): " client_uuid
+    [[ -z "$client_uuid" ]] && client_uuid=$($XRAY_BIN_PATH uuid)
+
+    local keys=$($XRAY_BIN_PATH x25519)
+    local private_key=$(echo "$keys" | awk '/Private key/ {print $3}')
+    local short_id=$(openssl rand -hex 8)
+
+    _info "正在创建配置文件: ${XRAY_CONFIG_FILE}"
+    mkdir -p /usr/local/etc/xray
+
+    # 修正后的 jq 命令
+    jq -n \
+      --argjson port "$xray_port" --arg uuid "$client_uuid" --arg p_key "$private_key" \
+      --arg s_id "$short_id" --arg target_domain "$fallback_target" \
+      '{
+        "log": {"loglevel": "warning"},
+        "dns": {
+          "servers": [
+            "https+local://cloudflare-dns.com/dns-query",
+            "1.1.1.1",
+            "1.0.0.1",
+            "8.8.8.8",
+            "8.8.4.4",
+            "localhost"
+          ]
+        },
+        "inbounds": [
+          {
+            "listen": "0.0.0.0",
+            "port": $port,
+            "protocol": "vless",
+            "settings": {
+              "clients": [
+                {
+                  "id": $uuid,
+                  "flow": "xtls-rprx-vision"
+                }
+              ],
+              "decryption": "none"
+            },
+            "streamSettings": {
+              "network": "raw",
+              "security": "reality",
+              "realitySettings": {
+                "show": false,
+                "target": ($target_domain + ":443"),
+                "xver": 0,
+                "serverNames": [$target_domain],
+                "privateKey": $p_key,
+                "maxTimeDiff": 60000,
+                "shortIds": [$s_id]
+              }
+            },
+            "sniffing": {
+              "enabled": true,
+              "destOverride": ["http", "tls"]
+            }
+          }
+        ],
+        "outbounds": [
+          {
+            "protocol": "freedom",
+            "tag": "direct"
+          },
+          {
+            "protocol": "blackhole",
+            "tag": "blocked"
+          }
+        ],
+        "routing": {
+          "domainStrategy": "IPIfNonMatch",
+          "rules": [
+            {
+              "type": "field",
+              "outboundTag": "blocked",
+              "protocol": ["bittorrent"]
+            },
+            {
+              "type": "field",
+              "outboundTag": "blocked",
+              "domain": ["geosite:cn", "geosite:category-ads-all"]
+            },
+            {
+              "type": "field",
+              "outboundTag": "blocked",
+              "ip": ["geoip:cn", "geoip:private"]
+            }
+          ]
+        }
+      }' > "$XRAY_CONFIG_FILE" || _error "jq 生成配置失败。"
     
-    jq -n --argjson port "$xray_port" --arg uuid "$client_uuid" --arg p_key "$private_key" \
-          --arg s_id "$short_id" --arg target_domain "$fallback_target" \
-      '{ "log": {"loglevel": "warning"},
-         "dns": {"servers": ["https+local://cloudflare-dns.com/dns-query", "1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "localhost"]},
-         "inbounds": [{"listen": "0.0.0.0", "port": $port, "protocol": "vless",
-           "settings": {"clients": [{"id": $uuid, "flow": "xtls-rprx-vision"}], "decryption": "none"},
-           "streamSettings": {"network": "raw", "security": "reality",
-             "realitySettings": {"show": false, "dest": ($target_domain + ":443"), "xver": 0,
-                                "serverNames": [$target_domain], "privateKey": $p_key, "minClientVer": "", 
-                                "maxClientVer": "", "maxTimeDiff": 60000, "shortIds": [$s_id]}},
-           "sniffing": {"enabled": true, "destOverride": ["http", "tls", "fakedns"]}}],
-         "outbounds": [{"protocol": "freedom", "tag": "direct"}, {"protocol": "blackhole", "tag": "block"}],
-         "routing": {"domainStrategy": "IPIfNonMatch", "rules": [
-           {"type": "field", "outboundTag": "blocked", "protocol": ["bittorrent"]},
-           {"type": "field", "outboundTag": "blocked", "domain": ["geosite:cn","geoip:private","category-ads-all"]},
-           {"type": "field", "outboundTag": "blocked", "ip": ["geoip:cn","geoip:private"]}}}' > "$XRAY_TEMP_CONFIG_FILE" || _error "jq 生成配置失败。"
-    
-    _info "配置文件内容已生成到 ${XRAY_TEMP_CONFIG_FILE}."
-    mkdir -p "$(dirname "$XRAY_CONFIG_FILE")"
-    mv "$XRAY_TEMP_CONFIG_FILE" "$XRAY_CONFIG_FILE"
-    _info "配置已写入: ${XRAY_CONFIG_FILE}"
-    _warn "当前 Xray 版本可能无内置配置检查命令。配置正确性将在服务重启时验证。"
+    _info "配置文件生成成功: ${XRAY_CONFIG_FILE}"
 }
 
 display_share_link() {
