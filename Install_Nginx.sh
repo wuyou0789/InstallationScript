@@ -1,13 +1,11 @@
 #!/bin/bash
 
 # ================================================================================
-# Nginx WebDAV Ultimate Script
+# Nginx WebDAV Ultimate Script (AWUS)
 #
-# Version: 4.3.3-integrated
+# Version: 4.3.4-readonly-fix
 # Author: wuyou0789 & AI Assistant
-# GitHub: https://github.com/wuyou0789/InstallationScript
-# License: MIT
-
+# Description: Fixed sed delimiter bug & Enforced Read-Only Mode
 # ================================================================================
 
 # --- Strict Mode & Environment ---
@@ -15,7 +13,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 # --- Global Constants ---
-readonly SCRIPT_VERSION="4.3.3-integrated"
+readonly SCRIPT_VERSION="4.3.4-readonly-fix"
 readonly RED='\033[1;31m'
 readonly GREEN='\033[1;32m'
 readonly YELLOW='\033[1;33m'
@@ -40,6 +38,7 @@ _error() { printf "${RED}[错误] %s${NC}\n" "$*"; exit 1; }
 apply_kernel_optimizations() {
     _info "--- 正在应用内核性能优化 (sysctl.conf) ---"
     local CONF_FILE="/etc/sysctl.conf"
+    # 注意：这里的标记文本包含斜杠 "/"
     local START_MARKER="# --- BEGIN NGINX/WebDAV OPTIMIZATIONS ---"
     local END_MARKER="# --- END NGINX/WebDAV OPTIMIZATIONS ---"
 
@@ -63,7 +62,10 @@ EOF
     if ! grep -q "$START_MARKER" "$CONF_FILE"; then
         cp "$CONF_FILE" "$CONF_FILE.bak_$(date +%F)"
     fi
-    sed -i "/$START_MARKER/,/$END_MARKER/d" "$CONF_FILE"
+    
+    # [修复] 使用 "|" 作为 sed 分隔符，防止变量中的 "/" 导致语法错误
+    sed -i "\|$START_MARKER\|,\|$END_MARKER\|d" "$CONF_FILE"
+    
     echo "$OPTIMIZATIONS" >> "$CONF_FILE"
     _info "正在加载新的内核参数..."
     sysctl -p
@@ -358,7 +360,7 @@ EOF_VHOST_TEMP
         _info "正在申请新的 SSL 证书..."; "${cert_command_array[@]}" || _error "Certbot (首次申请) 失败。"
     fi
 
-    _info "SSL 证书已处理。正在生成最终的 Nginx 配置文件..."
+    _info "SSL 证书已处理。正在生成最终的 Nginx 配置文件 (只读模式)..."
     nginx_vhost_path="/etc/nginx/sites-available/${DOMAIN_NAME}"
     cat <<EOF_VHOST_FINAL | tee "${nginx_vhost_path}" > /dev/null
 server {
@@ -374,20 +376,27 @@ server {
     root ${WEBDEV_DIR};
     charset utf-8;
 
-    client_max_body_size 1M; # Increased limit
+    # --- 安全与日志设置 ---
     add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "SAMEORIGIN" always;
     access_log /var/log/nginx/${DOMAIN_NAME}.access.log;
     error_log /var/log/nginx/${DOMAIN_NAME}.error.log warn;
+    
+    # 开启目录浏览以便下载
     autoindex on;
 
-    location ~ /\.(_.*|DS_Store|thumbs\.db)$ { return 403; }
+    # 屏蔽敏感文件
+    location ~ /\.(_.*|DS_Store|thumbs\.db)\$ { return 403; }
+
     location / {
         auth_basic "Secure WebDAV"; auth_basic_user_file ${NGINX_PASSWD_FILE};
+        
+        # 只启用 PROPFIND (浏览) 和 OPTIONS
+        # 不包含 PUT, DELETE, MOVE 等方法，严格只读
         dav_ext_methods PROPFIND OPTIONS;
-        dav_access user:r group:r all:r;
     }
+    
     ssl_certificate /etc/letsencrypt/live/${DOMAIN_NAME}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${DOMAIN_NAME}/privkey.pem;
     include /etc/letsencrypt/options-ssl-nginx.conf;
@@ -409,7 +418,7 @@ EOF_VHOST_FINAL
     _nginx_ctl "restart"
 
     trap - ERR EXIT
-    _info "${GREEN}--- Nginx WebDAV 安装和配置成功！ ---${NC}";
+    _info "${GREEN}--- Nginx WebDAV 安装和配置成功！(只读模式) ---${NC}";
 
     mkdir -p "$SCRIPT_INSTALL_DIR"
     { echo "AWUS_DOMAIN_NAME=\"${DOMAIN_NAME}\""; echo "AWUS_WEBDEV_DIR=\"${WEBDEV_DIR}\""; echo "AWUS_NGINX_PASSWD_FILE=\"${NGINX_PASSWD_FILE}\""; } > "$CONFIG_FILE"
