@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # --- 1. 基础检查与环境准备 ---
-if [[ $EUID -ne 0 ]]; then
+if [ $EUID -ne 0 ]; then
     echo "错误：必须使用 root 权限运行此脚本。"
     exit 1
 fi
@@ -9,7 +9,7 @@ fi
 echo "正在安装依赖 (curl, jq, openssl)..."
 if [ -f /etc/debian_version ]; then
     apt-get update -y && apt-get install -y curl jq openssl
-elif[ -f /etc/redhat-release ]; then
+elif [ -f /etc/redhat-release ]; then  # 修复：增加了 elif 后的空格
     yum install -y curl jq openssl
 fi
 
@@ -23,8 +23,8 @@ echo "=========================================="
 echo "       Xray REALITY 极简安装向导"
 echo "=========================================="
 
-# >>> 请在这里填入您刚才上传的 JSON 模板的 Raw 链接 <<<
-TEMPLATE_URL="https://raw.githubusercontent.com/wuyou0789/xray/main/config_template.json"
+# 修复：更新为正确的 GitHub Raw 链接
+TEMPLATE_URL="https://raw.githubusercontent.com/wuyou0789/InstallationScript/main/config_template.json"
 
 # 获取服务器地址
 default_ip=$(curl -s4m8 ip.sb)
@@ -48,22 +48,25 @@ CONFIG_FILE="/usr/local/etc/xray/config.json"
 echo "正在从远程下载配置模板..."
 curl -sL "$TEMPLATE_URL" -o /tmp/config_template.json
 
-if[ ! -f /tmp/config_template.json ] || ! jq . /tmp/config_template.json >/dev/null 2>&1; then
+# 修复：增加了 if 后的空格
+if [ ! -f /tmp/config_template.json ] || ! jq . /tmp/config_template.json >/dev/null 2>&1; then
     echo "错误：下载配置模板失败或 JSON 格式不正确，请检查 URL！"
     exit 1
 fi
 
 echo "正在将您的专属参数写入配置..."
-# 核心魔法：使用 jq 替换模板中的对应字段
+# 核心修复：更正了 target 为 dest，修复了 raw 为 tcp，并清理了无用字段
 jq --arg uuid "$xray_uuid" \
    --arg domain "$FALLBACK_DOMAIN" \
    --arg pk "$private_key" \
    --arg sid "$short_id" \
    '.inbounds[0].settings.clients[0].id = $uuid |
-    .inbounds[0].streamSettings.realitySettings.target = ($domain + ":443") |
+    .inbounds[0].streamSettings.network = "tcp" |
+    .inbounds[0].streamSettings.realitySettings.dest = ($domain + ":443") |
+    del(.inbounds[0].streamSettings.realitySettings.target) |
     .inbounds[0].streamSettings.realitySettings.serverNames = [$domain] |
     .inbounds[0].streamSettings.realitySettings.privateKey = $pk |
-    .inbounds[0].streamSettings.realitySettings.shortIds =[$sid]' \
+    .inbounds[0].streamSettings.realitySettings.shortIds = [$sid]' \
    /tmp/config_template.json > "$CONFIG_FILE"
 
 # 删掉临时模板文件
