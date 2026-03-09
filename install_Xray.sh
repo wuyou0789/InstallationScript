@@ -37,10 +37,13 @@ FALLBACK_DOMAIN=${FALLBACK_DOMAIN:-"www.amazon.com"}
 
 # 生成密钥和 UUID
 echo "正在生成密钥和 UUID..."
-xray_uuid=$(xray uuid)
-keys=$(xray x25519)
-private_key=$(echo "$keys" | awk '/Private key/ {print $3}')
-public_key=$(echo "$keys" | awk '/Public key/ {print $3}')
+# 强制使用绝对路径
+xray_uuid=$(/usr/local/bin/xray uuid)
+keys=$(/usr/local/bin/xray x25519)
+
+# 使用正则表达式同时兼容新旧版本的输出格式
+private_key=$(echo "$keys" | grep -E -i "Private key|PrivateKey" | awk '{print $NF}')
+public_key=$(echo "$keys" | grep -E -i "Public key|Password" | awk '{print $NF}')
 short_id=$(openssl rand -hex 4)
 
 # --- 4. 下载并动态生成配置文件 ---
