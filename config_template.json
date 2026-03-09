@@ -1,0 +1,71 @@
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds":[
+    {
+      "listen": "0.0.0.0",
+      "port": 443,
+      "protocol": "vless",
+      "settings": {
+        "clients":[
+          {
+            "id": "PLACEHOLDER_UUID",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "raw",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "target": "PLACEHOLDER_DOMAIN:443",
+          "xver": 0,
+          "serverNames":[
+            "PLACEHOLDER_DOMAIN"
+          ],
+          "privateKey": "PLACEHOLDER_PRIVATE_KEY",
+          "shortIds": [
+            "PLACEHOLDER_SHORT_ID"
+          ]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls"]
+      }
+    }
+  ],
+  "outbounds":[
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    },
+    {
+      "protocol": "blackhole",
+      "tag": "block"
+    }
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules":[
+      {
+        "type": "field",
+        "outboundTag": "block",
+        "protocol": ["bittorrent"]
+      },
+      {
+        "type": "field",
+        "outboundTag": "block",
+        "domain":["geosite:cn", "geosite:category-ads-all"]
+      },
+      {
+        "type": "field",
+        "outboundTag": "block",
+        "ip": ["geoip:cn", "geoip:private"]
+      }
+    ]
+  }
+}
