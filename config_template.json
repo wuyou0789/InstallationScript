@@ -16,12 +16,12 @@
         ],
         "decryption": "none"
       },
-      "streamSettings": {
-        "network": "raw",
+"streamSettings": {
+        "network": "tcp",
         "security": "reality",
         "realitySettings": {
           "show": false,
-          "target": "PLACEHOLDER_DOMAIN:443",
+          "dest": "PLACEHOLDER_DOMAIN:443",
           "xver": 0,
           "serverNames":[
             "PLACEHOLDER_DOMAIN"
