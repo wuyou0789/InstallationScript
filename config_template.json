@@ -53,18 +53,33 @@
     "rules":[
       {
         "type": "field",
-        "outboundTag": "block",
-        "protocol": ["bittorrent"]
+        "outboundTag": "direct",
+        "domain":[
+          "geosite:geolocation-!cn"
+        ]
       },
       {
         "type": "field",
         "outboundTag": "block",
-        "domain":["geosite:cn", "geosite:category-ads-all"]
+        "protocol": [
+          "bittorrent"
+        ]
       },
       {
         "type": "field",
         "outboundTag": "block",
-        "ip": ["geoip:cn", "geoip:private"]
+        "domain": [
+          "geosite:category-ads",
+          "geosite:cn"
+        ]
+      },
+      {
+        "type": "field",
+        "outboundTag": "block",
+        "ip": [
+          "geoip:private",
+          "geoip:cn"
+        ]
       }
     ]
   }
