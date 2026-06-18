@@ -1,0 +1,109 @@
+#!/bin/bash
+
+# ==========================================
+# 脚本名称: setup_security.sh
+# 适用系统: Ubuntu 20.04 / 22.04 / 24.04 (支持 Oracle Cloud 等云环境)
+# 默认端口: 1914 (支持自定义)
+# ==========================================
+
+# 确保以 root 权限运行
+if [ "$EUID" -ne 0 ]; then
+  echo "❌ 请使用 sudo 运行此脚本"
+  exit 1
+fi
+
+# 允许通过参数自定义端口，如果未传入参数则默认使用 1914
+NEW_PORT=${1:-1914}
+
+# 校验端口号是否合法 (必须是 1 到 65535 之间的数字)
+if ! [[ "$NEW_PORT" =~ ^[0-9]+$ ]] || [ "$NEW_PORT" -lt 1 ] || [ "$NEW_PORT" -gt 65535 ]; then
+  echo "❌ 错误: '$NEW_PORT' 不是一个有效的端口号！请输入 1 - 65535 之间的数字。"
+  echo "💡 使用示例: sudo $0 2222"
+  exit 1
+fi
+
+echo "========== 1. 防火墙安全检查与配置 =========="
+# 1.1 检查并允许新端口通过 UFW（以防 UFW 已启用）
+if command -v ufw >/dev/null 2>&1; then
+    echo "⚙️ 正在 UFW 防火墙中放行 TCP 端口 $NEW_PORT..."
+    ufw allow $NEW_PORT/tcp
+    ufw reload
+else
+    echo "⚠️ 未检测到 UFW，请确保您的外部云防火墙（如 Oracle 虚拟云网络入站规则）已放行 $NEW_PORT 端口！"
+fi
+
+echo "========== 2. 修改 SSH 端口 =========="
+# 备份原始 SSH 配置
+cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+echo "💾 已备份 SSH 配置到 /etc/ssh/sshd_config.bak"
+
+# 安全替换端口配置
+sed -i "s/^#*Port [0-9]*/Port $NEW_PORT/" /etc/ssh/sshd_config
+
+# 处理现代 Ubuntu 的 ssh.socket 托管问题
+if systemctl is-active --quiet ssh.socket; then
+    echo "⚙️ 检测到系统正在使用 ssh.socket，正在切换为经典的 ssh.service 模式..."
+    systemctl disable --now ssh.socket 2>/dev/null
+    systemctl enable --now ssh.service 2>/dev/null
+fi
+
+# 重启 SSH 服务
+systemctl restart ssh
+echo "🔄 SSH 服务已重启，正在监听新端口 $NEW_PORT..."
+
+# 检查端口监听状态
+sleep 1
+if ss -tulpn | grep -q "$NEW_PORT"; then
+    echo "✅ 成功：SSH 已在端口 $NEW_PORT 监听！"
+else
+    echo "❌ 警告：未检测到端口 $NEW_PORT 的监听，请检查 /var/log/auth.log 或 systemctl status ssh"
+fi
+
+echo "========== 3. 安装与配置 Fail2Ban =========="
+# 更新源并安装
+apt-get update && apt-get install fail2ban -y
+
+# 写入防爆破配置
+# 特别注意：backend = systemd 是解决现代 Ubuntu 找不到 /var/log/auth.log 的黄金参数
+cat <<EOF > /etc/fail2ban/jail.d/sshd.local
+[sshd]
+enabled = true
+port = $NEW_PORT
+filter = sshd
+backend = systemd
+maxretry = 4
+findtime = 10m
+bantime = 86400
+EOF
+
+# 重启并启用 Fail2Ban
+systemctl restart fail2ban
+systemctl enable fail2ban
+
+echo "========== 4. 最终状态检查 =========="
+echo "⚙️ Fail2Ban SSH 监控状态如下："
+fail2ban-client status sshd
+
+echo "=========================================="
+echo "🎉 脚本运行完成！当前配置端口为: $NEW_PORT"
+echo "⚠️ 重要安全提示："
+echo "1. 请【绝对不要】关闭当前的 SSH 终端窗口！"
+echo "2. 请务必去 Oracle Cloud 控制台的虚拟网卡安全规则中，添加 $NEW_PORT 端口的入站放行！"
+echo "3. 新开一个终端窗口，尝试运行：ssh -p $NEW_PORT user@IP 测试是否能正常登录！"
+echo "=========================================="
+```
+eof
+
+### 🛠️ 现在的运行方式：
+
+现在您可以非常方便地按需选择运行方式：
+
+1. **使用默认端口 (1914)**：
+   ```bash
+   sudo ./setup_security.sh
+   ```
+
+2. **使用自定义端口 (例如 2222)**：
+   直接在脚本后面追加您想要的端口号即可：
+   ```bash
+   sudo ./setup_security.sh 2222
