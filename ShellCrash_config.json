@@ -1,0 +1,326 @@
+{
+  "outbounds": [
+    {
+      "type": "selector",
+      "tag": "🚀 节点选择",
+      "outbounds": [
+        "♻️ 自动选择",
+        "👉 手动选择",
+        "🇯🇵 日本节点",
+        "🇸🇬 新加坡节点",
+        "🇺🇸 美国节点",
+        "📉 省流节点",
+        "🎯 本地直连",
+        "HY"
+      ],
+      "providers": null
+    },
+    {
+      "type": "selector",
+      "tag": "服务器专用节点",
+      "outbounds": null,
+      "providers": null,
+      "use_all_providers": true
+    },
+    {
+      "type": "selector",
+      "tag": "🤖 AI 平台",
+      "outbounds": [
+        "🚀 节点选择",
+        "🇯🇵 日本节点",
+        "🇸🇬 新加坡节点",
+        "🇺🇸 美国节点",
+        "📉 省流节点",
+        "HY"
+      ],
+      "providers": null
+    },
+    {
+      "type": "selector",
+      "tag": "🎬 国际流媒体",
+      "outbounds": [
+        "🚀 节点选择",
+        "🇯🇵 日本节点",
+        "🇸🇬 新加坡节点",
+        "🇺🇸 美国节点",
+        "📉 省流节点",
+        "HY"
+      ],
+      "providers": null
+    },
+    {
+      "type": "selector",
+      "tag": "🐟 漏网之鱼",
+      "outbounds": [
+        "🚀 节点选择",
+        "🇯🇵 日本节点",
+        "🇸🇬 新加坡节点",
+        "🇺🇸 美国节点",
+        "📉 省流节点",
+        "HY",
+        "🎯 本地直连"
+      ],
+      "providers": null
+    },
+    {
+      "type": "direct",
+      "tag": "🎯 本地直连"
+    },
+    {
+      "type": "selector",
+      "tag": "GLOBAL",
+      "outbounds": [
+        "🚀 节点选择",
+        "🎯 本地直连"
+      ],
+      "providers": null
+    },
+    {
+      "type": "selector",
+      "tag": "📉 省流节点",
+      "outbounds": null,
+      "providers": null,
+      "include": "0\\.[1-5]|低倍率|省流|大流量",
+      "use_all_providers": true
+    },
+    {
+      "type": "urltest",
+      "tag": "♻️ 自动选择",
+      "outbounds": null,
+      "providers": null,
+      "use_all_providers": true,
+      "interval": "2m0s",
+      "tolerance": 100
+    },
+    {
+      "type": "selector",
+      "tag": "👉 手动选择",
+      "outbounds": null,
+      "providers": null,
+      "use_all_providers": true
+    },
+    {
+      "type": "selector",
+      "tag": "🇯🇵 日本节点",
+      "outbounds": null,
+      "providers": null,
+      "include": "(?i)(🇯🇵|日|jp|japan)",
+      "use_all_providers": true
+    },
+    {
+      "type": "urltest",
+      "tag": "🇸🇬 新加坡节点",
+      "outbounds": null,
+      "providers": null,
+      "include": "(?i)(🇸🇬|新|sg|singapore)",
+      "use_all_providers": true,
+      "interval": "2m0s"
+    },
+    {
+      "type": "selector",
+      "tag": "🇺🇸 美国节点",
+      "outbounds": null,
+      "providers": null,
+      "include": "(?i)(🇺🇸|美|us|unitedstates|united states)",
+      "use_all_providers": true
+    },
+    {
+      "type": "selector",
+      "tag": "HY",
+      "outbounds": null,
+      "providers": [
+        "HY"
+      ],
+      "include": ".*"
+    }
+  ],
+  "providers": [
+    {
+      "type": "remote",
+      "tag": "HY",
+      "url": "https://sub.col46.uk:8443/api/sub/a_-w5mUEbgPDgrBq",
+      "path": "./providers/HY.yaml",
+      "user_agent": "clash.meta",
+      "update_interval": "12h0m0s",
+      "health_check": {
+        "enabled": true,
+        "url": "https://www.gstatic.com/generate_204",
+        "timeout": "3s"
+      },
+      "override_dialer": {
+        "domain_resolver": "223.5.5.5, 2400:3200::1"
+      },
+      "override_tls": {
+        "enabled": true,
+        "insecure": true
+      }
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "rule_set": "private",
+        "outbound": "🎯 本地直连"
+      },
+      {
+        "ip_is_private": true,
+        "outbound": "🎯 本地直连"
+      },
+      {
+        "source_ip_cidr": [
+          "192.168.50.192/26"
+        ],
+        "outbound": "服务器专用节点"
+      },
+      {
+        "rule_set": "ai",
+        "outbound": "🤖 AI 平台"
+      },
+      {
+        "rule_set": [
+          "netflix",
+          "youtube",
+          "media"
+        ],
+        "outbound": "🎬 国际流媒体"
+      },
+      {
+        "rule_set": [
+          "microsoft-cn",
+          "apple-cn",
+          "google-cn",
+          "games",
+          "proxy"
+        ],
+        "outbound": "🚀 节点选择"
+      },
+      {
+        "rule_set": [
+          "games-cn",
+          "cn"
+        ],
+        "outbound": "🎯 本地直连"
+      },
+      {
+        "rule_set": "telegramip",
+        "outbound": "🚀 节点选择"
+      },
+      {
+        "action": "resolve",
+        "server": "dns_proxy",
+        "strategy": "prefer_ipv4",
+        "match_only": true
+      },
+      {
+        "rule_set": "cnip",
+        "outbound": "🎯 本地直连"
+      },
+      {
+        "rule_set": [
+          "netflixip",
+          "mediaip"
+        ],
+        "outbound": "🎬 国际流媒体"
+      }
+    ],
+    "rule_set": [
+      {
+        "type": "remote",
+        "tag": "private",
+        "path": "./ruleset/private.srs",
+        "url": "https://testingcf.jsdelivr.net/gh/DustinWin/ruleset_geodata@sing-box-ruleset/private.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "microsoft-cn",
+        "path": "./ruleset/microsoft-cn.srs",
+        "url": "https://testingcf.jsdelivr.net/gh/DustinWin/ruleset_geodata@sing-box-ruleset/microsoft-cn.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "apple-cn",
+        "path": "./ruleset/apple-cn.srs",
+        "url": "https://testingcf.jsdelivr.net/gh/DustinWin/ruleset_geodata@sing-box-ruleset/apple-cn.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "google-cn",
+        "path": "./ruleset/google-cn.srs",
+        "url": "https://testingcf.jsdelivr.net/gh/DustinWin/ruleset_geodata@sing-box-ruleset/google-cn.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "games-cn",
+        "path": "./ruleset/games-cn.srs",
+        "url": "https://testingcf.jsdelivr.net/gh/DustinWin/ruleset_geodata@sing-box-ruleset/games-cn.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "games",
+        "path": "./ruleset/games.srs",
+        "url": "https://testingcf.jsdelivr.net/gh/DustinWin/ruleset_geodata@sing-box-ruleset/games.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "netflix",
+        "path": "./ruleset/netflix.srs",
+        "url": "https://testingcf.jsdelivr.net/gh/DustinWin/ruleset_geodata@sing-box-ruleset/netflix.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "youtube",
+        "path": "./ruleset/youtube.srs",
+        "url": "https://testingcf.jsdelivr.net/gh/DustinWin/ruleset_geodata@sing-box-ruleset/youtube.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "media",
+        "path": "./ruleset/media.srs",
+        "url": "https://testingcf.jsdelivr.net/gh/DustinWin/ruleset_geodata@sing-box-ruleset/media.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "ai",
+        "path": "./ruleset/ai.srs",
+        "url": "https://testingcf.jsdelivr.net/gh/DustinWin/ruleset_geodata@sing-box-ruleset/ai.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "proxy",
+        "path": "./ruleset/proxy.srs",
+        "url": "https://testingcf.jsdelivr.net/gh/DustinWin/ruleset_geodata@sing-box-ruleset/proxy.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "cn",
+        "path": "./ruleset/cn.srs",
+        "url": "https://testingcf.jsdelivr.net/gh/DustinWin/ruleset_geodata@sing-box-ruleset/cn.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "telegramip",
+        "path": "./ruleset/telegramip.srs",
+        "url": "https://testingcf.jsdelivr.net/gh/DustinWin/ruleset_geodata@sing-box-ruleset/telegramip.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "cnip",
+        "path": "./ruleset/cnip.srs",
+        "url": "https://testingcf.jsdelivr.net/gh/DustinWin/ruleset_geodata@sing-box-ruleset/cnip.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "netflixip",
+        "path": "./ruleset/netflixip.srs",
+        "url": "https://testingcf.jsdelivr.net/gh/DustinWin/ruleset_geodata@sing-box-ruleset/netflixip.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "mediaip",
+        "path": "./ruleset/mediaip.srs",
+        "url": "https://testingcf.jsdelivr.net/gh/DustinWin/ruleset_geodata@sing-box-ruleset/mediaip.srs"
+      }
+    ],
+    "final": "🐟 漏网之鱼"
+  }
+}
