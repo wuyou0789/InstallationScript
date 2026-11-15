@@ -2,7 +2,7 @@
 # ============================================================================
 #  sing-box VLESS + REALITY 安装脚本（systemd Linux）
 # ----------------------------------------------------------------------------
-#  核心版本默认 1.14.4（可复现）；要换别的已验证版本：SINGBOX_VERSION=1.13.0 bash ...
+#  核心版本默认装「最新稳定版」；要固定版本（可复现部署）：SINGBOX_VERSION=1.14.4 bash ...
 #
 #  ★ 路由策略（本脚本的重点，按顺序判定）
 #    1) sniff
@@ -21,7 +21,7 @@
 #    （第 6 条白名单仍然优先，Google 登录不会被误杀）
 #
 #  ★ 可用环境变量覆盖（便于自动化 / 无人值守）
-#    SINGBOX_VERSION=1.14.4   核心版本（默认锁 1.14.4）
+#    SINGBOX_VERSION=latest   核心版本（默认 latest=最新稳定版，也可写 1.14.4 固定）
 #    SINGBOX_REINSTALL=1      即使版本一致也强制重新下载安装
 #    MAIN_PORT=443            主端口
 #    BACKUP_PORT=8443         备用端口（设空字符串可关闭）
@@ -48,7 +48,7 @@ readonly DATA="/var/lib/sing-box"
 readonly UNIT="/etc/systemd/system/sing-box.service"
 readonly LINK_FILE="$ETC/share_link.txt"
 
-readonly SINGBOX_VERSION="${SINGBOX_VERSION:-1.14.4}"
+readonly SINGBOX_VERSION="${SINGBOX_VERSION:-latest}"
 readonly MAIN_PORT="${MAIN_PORT:-443}"
 readonly BACKUP_PORT="${BACKUP_PORT:-8443}"
 readonly DROP_CN_DEST="${DROP_CN_DEST:-0}"
@@ -70,15 +70,22 @@ warn() { echo "[!] $*"; }
 err()  { echo "[x] $*" >&2; }
 die()  { err "$*"; exit 1; }
 
+# 注意：本函数常被 $( ) 调用（例如 SERVER="$(ask ...)"），
+# 因此提示语必须写到 /dev/tty，写到 stdout 会被命令替换吞掉，用户只会看到光标发呆。
 ask() {
     local prompt="$1" default="$2" noninteractive="${3:-$2}" ans=""
-    if { [ -c /dev/tty ] && exec 3</dev/tty; } 2>/dev/null; then
-        read -r -p "$prompt" ans <&3 2>/dev/null || ans=""
-        exec 3<&- || true
+    if { [ -c /dev/tty ] && exec 3<>/dev/tty; } 2>/dev/null; then
+        printf '%s' "$prompt" >&3
+        IFS= read -r ans <&3 || ans=""
+        exec 3>&- || true
+        printf '%s' "${ans:-$default}"
     else
-        ans="$noninteractive"
+        if [ "${NONINTERACTIVE_WARNED:-0}" != "1" ]; then
+            warn "当前环境没有可用的终端（/dev/tty），后续交互全部使用默认值。" >&2
+            NONINTERACTIVE_WARNED=1
+        fi
+        printf '%s' "$noninteractive"
     fi
-    printf '%s' "${ans:-$default}"
 }
 
 port_owner() {
@@ -142,7 +149,17 @@ check_port "$MAIN_PORT" "主" || exit 1
 check_port "$BACKUP_PORT" "备用" || exit 1
 
 # --- 3. 安装核心（SHA256 校验；版本一致时跳过下载）---
-TAG="v${SINGBOX_VERSION#v}"
+if [ "$SINGBOX_VERSION" = "latest" ]; then
+    info "正在查询 sing-box 最新稳定版..."
+    TAG="$(curl -fsSL --retry 3 --connect-timeout 15 https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null \
+           | jq -r '.tag_name // empty' 2>/dev/null)"
+    if [ -z "$TAG" ]; then
+        die "获取 sing-box 最新版本号失败。可显式指定版本重试：SINGBOX_VERSION=1.14.4 bash $0"
+    fi
+    info "最新稳定版：${TAG}"
+else
+    TAG="v${SINGBOX_VERSION#v}"
+fi
 ASSET="sing-box-${TAG#v}-linux-${SB_ARCH}.tar.gz"
 URL="https://github.com/SagerNet/sing-box/releases/download/${TAG}/${ASSET}"
 
@@ -175,6 +192,8 @@ installed_version="$("$BIN" version 2>/dev/null | awk '/sing-box version/ {print
 [ "${installed_version}" = "${TAG#v}" ] || die "安装版本不符：期望 ${TAG#v}，实际 ${installed_version:-未知}"
 ok "sing-box ${installed_version} 安装完成。"
 fi
+mkdir -p "$ETC"
+printf '%s\n' "$installed_version" > "$ETC/script-installed-version"
 
 # 只有「发行版包管理器装的」sing-box 服务才需要关掉，避免误停我们自己的 unit
 pkg_unit="$(systemctl show -p FragmentPath sing-box.service 2>/dev/null | cut -d= -f2)"
@@ -455,12 +474,21 @@ rollback() {
 }
 
 failure=""
+wait_port() {
+    local port="$1" i
+    for i in $(seq 1 30); do
+        [ -n "$(port_owner "$port")" ] && return 0
+        sleep 0.5
+    done
+    return 1
+}
+
 if ! wait_active; then
     failure="服务未能进入 active 状态"
-elif [ -z "$(port_owner "$MAIN_PORT")" ]; then
-    failure="服务是 active 的，但主端口 ${MAIN_PORT} 没有监听"
-elif [ -n "$BACKUP_PORT" ] && [ -z "$(port_owner "$BACKUP_PORT")" ]; then
-    failure="备用端口 ${BACKUP_PORT} 没有监听"
+elif ! wait_port "$MAIN_PORT"; then
+    failure="主端口 ${MAIN_PORT} 在 15 秒内没有开始监听"
+elif [ -n "$BACKUP_PORT" ] && ! wait_port "$BACKUP_PORT"; then
+    failure="备用端口 ${BACKUP_PORT} 在 15 秒内没有开始监听"
 else
     sleep 3
     service_running || failure="启动 3 秒内进程退出（疑似配置或 geo 数据问题）"
@@ -518,10 +546,17 @@ chmod +x /usr/local/bin/sblink
 
 cat > /usr/local/bin/singbox-version-check <<EOF
 #!/bin/bash
-PINNED="${TAG#v}"
-CURRENT="\$(${BIN} version 2>/dev/null | awk '/sing-box version/ {print \$3; exit}')"
-if [ "\$CURRENT" = "\$PINNED" ]; then echo "OK: sing-box \$CURRENT"; exit 0; fi
-echo "警告: 当前 \$CURRENT，脚本锁定的版本是 \$PINNED（SINGBOX_VERSION=\$PINNED bash install_singbox.sh 可回到该版本）"
+# 与「本脚本安装时记录的版本」比对，被意外改动时可一眼发现
+RECORD="${ETC}/script-installed-version"
+WANT="\$(cat "\$RECORD" 2>/dev/null || echo '${installed_version}')"
+CUR="\$(${BIN} version 2>/dev/null | awk '/sing-box version/ {print \$3; exit}')"
+LATEST="\$(curl -fsSL -m 8 https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null | jq -r '.tag_name // empty' 2>/dev/null | sed 's/^v//')"
+echo "已安装: \$CUR   由本脚本安装: \$WANT   当前最新稳定版: \${LATEST:-未知}"
+if [ "\$CUR" = "\$WANT" ]; then
+    echo "OK"
+    exit 0
+fi
+echo "提示: 版本与脚本安装时不一致（可能有手动升级/降级）。重跑 install_singbox.sh 可回到统一状态。"
 exit 1
 EOF
 chmod +x /usr/local/bin/singbox-version-check

@@ -57,15 +57,22 @@ die()  { err "$*"; exit 1; }
 
 # ask "提示" "默认值" [非交互时的取值]
 # 能读 /dev/tty 就读终端，保证 `curl ... | bash` 也能正常交互
+# 注意：本函数常被 $( ) 调用（例如 SERVER="$(ask ...)"），
+# 因此提示语必须写到 /dev/tty，写到 stdout 会被命令替换吞掉，用户只会看到光标发呆。
 ask() {
     local prompt="$1" default="$2" noninteractive="${3:-$2}" ans=""
-    if { [ -c /dev/tty ] && exec 3</dev/tty; } 2>/dev/null; then
-        read -r -p "$prompt" ans <&3 2>/dev/null || ans=""
-        exec 3<&- || true
+    if { [ -c /dev/tty ] && exec 3<>/dev/tty; } 2>/dev/null; then
+        printf '%s' "$prompt" >&3
+        IFS= read -r ans <&3 || ans=""
+        exec 3>&- || true
+        printf '%s' "${ans:-$default}"
     else
-        ans="$noninteractive"
+        if [ "${NONINTERACTIVE_WARNED:-0}" != "1" ]; then
+            warn "当前环境没有可用的终端（/dev/tty），后续交互全部使用默认值。" >&2
+            NONINTERACTIVE_WARNED=1
+        fi
+        printf '%s' "$noninteractive"
     fi
-    printf '%s' "${ans:-$default}"
 }
 
 # --- 1. 基础检查与环境准备 ---
@@ -120,7 +127,7 @@ installer="$(mktemp)"
 TMP_FILES+=("$installer")
 curl -fsSL "$INSTALL_SCRIPT_URL" -o "$installer" || die "错误：下载 Xray 安装器失败，请检查网络：${INSTALL_SCRIPT_URL}"
 [ -s "$installer" ] || die "错误：Xray 安装器下载内容为空。"
-bash "$installer" @ install --version "${XRAY_PIN_VERSION}" || die "错误：Xray 安装失败（见上面的输出）。"
+bash "$installer" install --version "${XRAY_PIN_VERSION}" || die "错误：Xray 安装失败（见上面的输出）。"
 systemctl enable xray >/dev/null 2>&1 || true
 
 # --- 2.1 版本校验：不是锁定版本就直接退出 ---
@@ -313,17 +320,24 @@ rm -f /tmp/xray_cfg_test.log
 chmod 600 "$new_cfg"
 ok "配置生成并通过自检。"
 
-# 4.3 备份旧配置（最多保留 BACKUP_KEEP 份）
-if [ -f "$CONFIG_FILE" ]; then
+# 4.3 备份旧配置（只有含 inbound 的旧配置才值得备份；官方安装器生成的 {} 空壳跳过）
+config_usable() {
+    [ -f "$CONFIG_FILE" ] && jq -e '(.inbounds // [] | length) > 0' "$CONFIG_FILE" >/dev/null 2>&1
+}
+if config_usable; then
     BACKUP_FILE="${CONFIG_FILE}.bak.$(date +%Y%m%d-%H%M%S)"
     cp -a "$CONFIG_FILE" "$BACKUP_FILE" && chmod 600 "$BACKUP_FILE"
     info "旧配置已备份：${BACKUP_FILE}"
     ls -1t "${CONFIG_FILE}".bak.* 2>/dev/null | tail -n +$((BACKUP_KEEP + 1)) | xargs -r rm -f
 fi
 
-# 4.4 原子替换
+# 4.4 原子替换（属主必须给到服务实际运行用户，否则 xray 起不来：permission denied）
 mv -f "$new_cfg" "$CONFIG_FILE" || die "错误：写入 ${CONFIG_FILE} 失败。"
-ok "配置已写入 ${CONFIG_FILE}"
+svc_user="$(systemctl show -p User  --value xray 2>/dev/null)"; svc_user="${svc_user:-root}"
+svc_group="$(systemctl show -p Group --value xray 2>/dev/null)"; svc_group="${svc_group:-$svc_user}"
+chown "${svc_user}:${svc_group}" "$CONFIG_FILE" 2>/dev/null || true
+chmod 0600 "$CONFIG_FILE" 2>/dev/null || true
+ok "配置已写入 ${CONFIG_FILE}（属主 ${svc_user}:${svc_group}，权限 600）"
 
 # --- 5. 重启服务并做二次校验 ---
 info "正在重启 Xray 服务..."
@@ -344,8 +358,12 @@ rollback() {
         return 1
     fi
     warn "正在回滚到上一份配置：${BACKUP_FILE}"
-    cp -a "$BACKUP_FILE" "$CONFIG_FILE" && chmod 600 "$CONFIG_FILE"
+    cp -a "$BACKUP_FILE" "$CONFIG_FILE" && chmod 0600 "$CONFIG_FILE"
+    rollback_user="$(systemctl show -p User  --value xray 2>/dev/null)"; rollback_user="${rollback_user:-root}"
+    rollback_group="$(systemctl show -p Group --value xray 2>/dev/null)"; rollback_group="${rollback_group:-$rollback_user}"
+    chown "${rollback_user}:${rollback_group}" "$CONFIG_FILE" 2>/dev/null || true
     systemctl restart xray >/dev/null 2>&1 || true
+    sleep 2
     if systemctl is-active --quiet xray; then
         ok "回滚成功，服务已恢复到改动前的状态。"
     else
@@ -355,10 +373,19 @@ rollback() {
 }
 
 failure_reason=""
+wait_port() {
+    local port="$1" i
+    for i in $(seq 1 30); do
+        [ -n "$(port_owner "$port")" ] && return 0
+        sleep 0.5
+    done
+    return 1
+}
+
 if ! wait_active; then
     failure_reason="服务未能进入 active 状态"
-elif ! (port_owner "$XRAY_PORT" | grep -qi 'xray'); then
-    failure_reason="服务是 active 的，但端口 ${XRAY_PORT} 没有在监听"
+elif ! wait_port "$XRAY_PORT"; then
+    failure_reason="端口 ${XRAY_PORT} 在 15 秒内没有开始监听"
 else
     sleep 3
     systemctl is-active --quiet xray || failure_reason="启动 3 秒内进程退出（疑似配置错误崩溃）"
